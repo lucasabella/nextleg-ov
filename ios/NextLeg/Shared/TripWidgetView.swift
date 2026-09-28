@@ -1,0 +1,128 @@
+import SwiftUI
+import WidgetKit
+
+/// Home Screen widget, small or medium. Shared so the app can preview it.
+struct TripWidgetView: View {
+    var trip: Trip = .toVeghel
+    var isMedium = false
+
+    var body: some View {
+        Group {
+            if isMedium {
+                HStack(spacing: 18) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        leg
+                        Spacer(minLength: 0)
+                        FlapTiles(text: trip.shownTime, size: 38)
+                        status.padding(.top, 2)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("→ \(trip.to.uppercased())")
+                            .font(.subheadline.weight(.heavy))
+                            .foregroundStyle(Palette.chalk)
+                            .lineLimit(2)
+                        Label(trip.origin.uppercased(), systemImage: trip.originSymbol)
+                            .font(.caption2.weight(.heavy))
+                            .foregroundStyle(Palette.steel)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                        Label("THEN \(trip.followingLeg.name.uppercased())", systemImage: trip.followingLeg.symbol)
+                            .font(.caption.weight(.heavy))
+                            .foregroundStyle(Palette.steel)
+                        updated
+                    }
+                    .frame(width: 124, alignment: .leading)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    leg
+                    Text("→ \(trip.to.uppercased())")
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.5)
+                        .foregroundStyle(Palette.steel)
+                    Spacer(minLength: 0)
+                    FlapTiles(text: trip.shownTime, size: 28)
+                    status.padding(.top, 2)
+                    updated
+                }
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .labelStyle(TightLabelStyle())
+    }
+
+    private var leg: some View {
+        HStack {
+            Label(trip.nextLeg.name.uppercased(), systemImage: trip.nextLeg.symbol)
+                .foregroundStyle(Palette.chalk)
+            Spacer()
+            if let platform = trip.platform {
+                Text("PL \(platform)")
+                    .foregroundStyle(Palette.amber)
+                    .widgetAccentable()
+            }
+        }
+        .font(.caption.weight(.heavy))
+    }
+
+    private var status: some View {
+        HStack(spacing: 6) {
+            Label(trip.status.uppercased(), systemImage: trip.statusSymbol)
+                .foregroundStyle(trip.isDelayed ? Palette.signal : Palette.steel)
+            if trip.isDelayed, let departure = trip.departure {
+                Text(departure).strikethrough().foregroundStyle(Palette.steel)
+            }
+        }
+        .font(.caption.weight(.heavy))
+    }
+
+    private var updated: some View {
+        Text("SAMPLE · UPDATED \(trip.updated)")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Palette.steel)
+    }
+}
+
+/// Icon and title close together, also inside a Form where labels get a wide icon column.
+private struct TightLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 5) {
+            configuration.icon
+            configuration.title
+        }
+    }
+}
+
+/// Departure time as split-flap tiles, one tile per digit.
+struct FlapTiles: View {
+    let text: String
+    let size: CGFloat
+
+    // Tinted and clear Home Screens drop colors, so the solid tiles become translucent there.
+    @Environment(\.widgetRenderingMode) private var renderingMode
+
+    var body: some View {
+        HStack(spacing: size * 0.08) {
+            ForEach(Array(text.enumerated()), id: \.offset) { _, character in
+                if character == ":" {
+                    Text(":")
+                } else {
+                    // Two flaps with a small gap, drawn behind the digit.
+                    Text(String(character))
+                        .frame(width: size * 0.95, height: size * 1.35)
+                        .background {
+                            VStack(spacing: max(1, size / 20)) {
+                                UnevenRoundedRectangle(topLeadingRadius: size * 0.18, topTrailingRadius: size * 0.18)
+                                UnevenRoundedRectangle(bottomLeadingRadius: size * 0.18, bottomTrailingRadius: size * 0.18)
+                            }
+                            .foregroundStyle(renderingMode == .fullColor ? Palette.graphite : Color.primary.opacity(0.14))
+                        }
+                }
+            }
+        }
+        .font(.system(size: size, weight: .bold, design: .monospaced))
+        .foregroundStyle(Palette.amber)
+        .widgetAccentable()
+    }
+}

@@ -3,58 +3,57 @@ import SwiftUI
 
 struct NextLegEntry: TimelineEntry {
     let date: Date
+    let trip: Trip
 }
 
 struct NextLegProvider: TimelineProvider {
     func placeholder(in context: Context) -> NextLegEntry {
-        NextLegEntry(date: .now)
+        NextLegEntry(date: .now, trip: .toVeghel)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (NextLegEntry) -> Void) {
-        completion(NextLegEntry(date: .now))
+        completion(NextLegEntry(date: .now, trip: JourneyPreferences.savedTrip))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NextLegEntry>) -> Void) {
-        let timeline = Timeline(entries: [NextLegEntry(date: .now)], policy: .never)
+        let entry = NextLegEntry(date: .now, trip: JourneyPreferences.savedTrip)
+        let timeline = Timeline(entries: [entry], policy: .never)
         completion(timeline)
     }
 }
 
 struct NextLegWidgetView: View {
+    let entry: NextLegEntry
+    @Environment(\.widgetFamily) private var family
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("NextLeg", systemImage: "tram.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tint)
-
-            Spacer(minLength: 4)
-
-            Text("Hello, world!")
-                .font(.title3.weight(.bold))
-
-            Text("Your next ride starts here.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
+        TripWidgetView(trip: entry.trip, isMedium: family == .systemMedium)
+            .environment(\.colorScheme, .dark)
+            .containerBackground(Palette.night, for: .widget)
     }
 }
 
 struct NextLegWidget: Widget {
-    let kind: String = "NextLegWidget"
+    let kind = JourneyPreferences.widgetKind
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: NextLegProvider()) { _ in
-            NextLegWidgetView()
-                .containerBackground(.fill.tertiary, for: .widget)
+        StaticConfiguration(kind: kind, provider: NextLegProvider()) { entry in
+            NextLegWidgetView(entry: entry)
         }
-        .configurationDisplayName("NextLeg")
-        .description("A preview of your next trip widget.")
+        .configurationDisplayName("Next leg")
+        .description("Your next train or bus.")
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 #Preview(as: .systemSmall) {
     NextLegWidget()
 } timeline: {
-    NextLegEntry(date: .now)
+    NextLegEntry(date: .now, trip: .toVeghel)
+}
+
+#Preview(as: .systemMedium) {
+    NextLegWidget()
+} timeline: {
+    NextLegEntry(date: .now, trip: .toVeghel)
 }
