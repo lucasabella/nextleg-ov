@@ -4,6 +4,8 @@
 
 .DS_Store
 DerivedData/
+.idea/
+/.local/
 
 ## User settings
 xcuserdata/
