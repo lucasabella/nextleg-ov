@@ -1,64 +1,242 @@
 import SwiftUI
 
-enum Mode {
+enum JourneyDirection: String, Codable {
+    case toVeghel = "to_veghel"
+    case toBlerick = "to_blerick"
+}
+
+enum JourneyFreshness: String, Codable {
+    case fresh
+    case stale
+    case sample
+}
+
+enum Mode: String, Codable {
     case train, bus
 
     var name: String { self == .train ? "Train" : "Bus" }
     var symbol: String { self == .train ? "train.side.front.car" : "bus.fill" }
 }
 
-/// One direction of the saved journey. Optional fields stay empty when the provider does not supply them.
+enum JourneyLegStatus: String, Codable {
+    case scheduled
+    case onTime = "on_time"
+    case delayed
+    case cancelled
+    case skipped
+    case unknown
+}
+
+struct JourneyLeg: Codable {
+    let mode: Mode
+    let origin: String
+    let destination: String
+    let scheduledDeparture: Date
+    let expectedDeparture: Date?
+    let status: JourneyLegStatus
+    let delaySeconds: Int?
+    let platform: String?
+    let sourceUpdatedAt: Date?
+
+    init(
+        mode: Mode,
+        origin: String,
+        destination: String,
+        scheduledDeparture: Date,
+        expectedDeparture: Date? = nil,
+        status: JourneyLegStatus,
+        delaySeconds: Int? = nil,
+        platform: String? = nil,
+        sourceUpdatedAt: Date? = nil
+    ) {
+        self.mode = mode
+        self.origin = origin
+        self.destination = destination
+        self.scheduledDeparture = scheduledDeparture
+        self.expectedDeparture = expectedDeparture
+        self.status = status
+        self.delaySeconds = delaySeconds
+        self.platform = platform
+        self.sourceUpdatedAt = sourceUpdatedAt
+    }
+}
+
+struct JourneySnapshot: Codable {
+    let direction: JourneyDirection
+    let fetchedAt: Date
+    let freshness: JourneyFreshness
+    let legs: [JourneyLeg]
+
+    static func sample(direction: JourneyDirection) -> JourneySnapshot {
+        switch direction {
+        case .toVeghel:
+            JourneySnapshot(
+                direction: direction,
+                fetchedAt: date("2026-09-28T06:10:00Z"),
+                freshness: .sample,
+                legs: [
+                    JourneyLeg(
+                        mode: .train,
+                        origin: "Sample origin",
+                        destination: "Sample transfer",
+                        scheduledDeparture: date("2026-09-28T06:14:00Z"),
+                        expectedDeparture: date("2026-09-28T06:19:00Z"),
+                        status: .delayed,
+                        delaySeconds: 300,
+                        platform: "3",
+                        sourceUpdatedAt: date("2026-09-28T06:09:00Z")
+                    ),
+                    JourneyLeg(
+                        mode: .bus,
+                        origin: "Sample transfer",
+                        destination: "Sample destination",
+                        scheduledDeparture: date("2026-09-28T06:42:00Z"),
+                        status: .scheduled
+                    )
+                ]
+            )
+        case .toBlerick:
+            JourneySnapshot(
+                direction: direction,
+                fetchedAt: date("2026-09-28T12:10:00Z"),
+                freshness: .sample,
+                legs: [
+                    JourneyLeg(
+                        mode: .bus,
+                        origin: "Sample destination",
+                        destination: "Sample transfer",
+                        scheduledDeparture: date("2026-09-28T14:10:00Z"),
+                        status: .scheduled
+                    ),
+                    JourneyLeg(
+                        mode: .train,
+                        origin: "Sample transfer",
+                        destination: "Sample origin",
+                        scheduledDeparture: date("2026-09-28T14:44:00Z"),
+                        status: .scheduled
+                    )
+                ]
+            )
+        }
+    }
+
+    private static func date(_ value: String) -> Date {
+        ISO8601DateFormatter().date(from: value)!
+    }
+}
+
+enum JourneyJSON {
+    static func decode(_ data: Data) throws -> JourneySnapshot {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(JourneySnapshot.self, from: data)
+    }
+
+    static func encode(_ snapshot: JourneySnapshot) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(snapshot)
+    }
+}
+
 struct Trip {
     var from: String
     var to: String
     var area: String?
-    var nextLeg: Mode
-    var followingLeg: Mode
+    var nextLeg: Mode?
+    var followingLeg: Mode?
     var departure: String?
     var expected: String?
-    var delay: Int?
+    var delayMinutes: Int?
     var platform: String?
     var updated: String
+    var legStatus: JourneyLegStatus
+    var freshness: JourneyFreshness
 
-    /// The current area, or the start stop when the direction was chosen by hand.
+    init(snapshot: JourneySnapshot, home: String, work: String) {
+        let goesHome = snapshot.direction == .toBlerick
+        let firstLeg = snapshot.legs.first
+        let secondLeg = snapshot.legs.dropFirst().first
+
+        from = goesHome ? work : home
+        to = goesHome ? home : work
+        area = nil
+        nextLeg = firstLeg?.mode
+        followingLeg = secondLeg?.mode
+        departure = firstLeg.map { Self.time($0.scheduledDeparture) }
+        if let expectedDeparture = firstLeg?.expectedDeparture {
+            expected = Self.time(expectedDeparture)
+        } else {
+            expected = nil
+        }
+        delayMinutes = firstLeg?.delaySeconds.map { Int((Double($0) / 60).rounded()) }
+        platform = firstLeg?.platform
+        updated = Self.time(snapshot.fetchedAt)
+        legStatus = firstLeg?.status ?? .unknown
+        freshness = snapshot.freshness
+    }
+
     var origin: String { area ?? "From \(from)" }
     var originSymbol: String { area == nil ? "hand.tap.fill" : "location.fill" }
-
-    var shownTime: String { expected ?? departure ?? "--:--" }
-    var isDelayed: Bool { (delay ?? 0) > 0 }
+    var shownTime: String { isCancelled || isSkipped ? "--:--" : expected ?? departure ?? "--:--" }
+    var isDelayed: Bool { legStatus == .delayed }
+    var isCancelled: Bool { legStatus == .cancelled }
+    var isSkipped: Bool { legStatus == .skipped }
 
     var status: String {
-        guard let delay else { return "No live times" }
-        return delay > 0 ? "+\(delay) min" : "On time"
+        switch legStatus {
+        case .scheduled: "Scheduled"
+        case .onTime: "On time"
+        case .delayed:
+            delayMinutes.map { "\($0 > 0 ? "+" : "")\($0) min" } ?? "Delayed"
+        case .cancelled: "Cancelled"
+        case .skipped: "Stop skipped"
+        case .unknown: "No live times"
+        }
     }
 
     var statusSymbol: String {
-        guard let delay else { return "questionmark.circle" }
-        return delay > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+        switch legStatus {
+        case .scheduled: "clock"
+        case .onTime: "checkmark.circle.fill"
+        case .delayed: "exclamationmark.triangle.fill"
+        case .cancelled: "xmark.circle.fill"
+        case .skipped: "xmark.circle.fill"
+        case .unknown: "questionmark.circle"
+        }
     }
 
-    // Fictional placeholder data.
-    static let toVeghel = Trip(
-        from: "Blerick", to: "Corridor, Veghel", area: nil,
-        nextLeg: .train, followingLeg: .bus,
-        departure: "08:14", expected: "08:19", delay: 5, platform: "3", updated: "08:10"
-    )
+    var statusColor: Color {
+        isDelayed || isCancelled || isSkipped ? Palette.signal : Palette.steel
+    }
 
-    static let toBlerick = Trip(
-        from: "Corridor, Veghel", to: "Blerick", area: nil,
-        nextLeg: .bus, followingLeg: .train,
-        departure: nil, expected: nil, delay: nil, platform: nil, updated: "08:10"
-    )
+    var freshnessLabel: String {
+        switch freshness {
+        case .fresh: "UPDATED"
+        case .stale: "STALE · UPDATED"
+        case .sample: "SAMPLE · UPDATED"
+        }
+    }
+
+    static var toVeghel: Trip {
+        Trip(snapshot: .sample(direction: .toVeghel), home: JourneyPreferences.defaultHome, work: JourneyPreferences.defaultWork)
+    }
+
+    static var toBlerick: Trip {
+        Trip(snapshot: .sample(direction: .toBlerick), home: JourneyPreferences.defaultHome, work: JourneyPreferences.defaultWork)
+    }
 
     static func sample(home: String, work: String, showsTripHome: Bool) -> Trip {
         let trimmedHome = home.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedWork = work.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedHome = trimmedHome.isEmpty ? JourneyPreferences.defaultHome : trimmedHome
         let resolvedWork = trimmedWork.isEmpty ? JourneyPreferences.defaultWork : trimmedWork
-        var trip = showsTripHome ? toBlerick : toVeghel
-        trip.from = showsTripHome ? resolvedWork : resolvedHome
-        trip.to = showsTripHome ? resolvedHome : resolvedWork
-        return trip
+        let direction: JourneyDirection = showsTripHome ? .toBlerick : .toVeghel
+        return Trip(snapshot: .sample(direction: direction), home: resolvedHome, work: resolvedWork)
+    }
+
+    private static func time(_ date: Date) -> String {
+        date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
     }
 }
 
@@ -81,7 +259,6 @@ enum JourneyPreferences {
     }
 }
 
-/// Split-Flap palette: a dark departure board with amber digits.
 enum Palette {
     static let night = Color(hex: 0x0D0F12)
     static let graphite = Color(hex: 0x1C2027)

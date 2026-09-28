@@ -26,9 +26,11 @@ struct TripWidgetView: View {
                             .foregroundStyle(Palette.steel)
                             .lineLimit(2)
                         Spacer(minLength: 0)
-                        Label("THEN \(trip.followingLeg.name.uppercased())", systemImage: trip.followingLeg.symbol)
-                            .font(.caption.weight(.heavy))
-                            .foregroundStyle(Palette.steel)
+                        if let followingLeg = trip.followingLeg {
+                            Label("THEN \(followingLeg.name.uppercased())", systemImage: followingLeg.symbol)
+                                .font(.caption.weight(.heavy))
+                                .foregroundStyle(Palette.steel)
+                        }
                         updated
                     }
                     .frame(width: 124, alignment: .leading)
@@ -54,8 +56,13 @@ struct TripWidgetView: View {
 
     private var leg: some View {
         HStack {
-            Label(trip.nextLeg.name.uppercased(), systemImage: trip.nextLeg.symbol)
-                .foregroundStyle(Palette.chalk)
+            if let nextLeg = trip.nextLeg {
+                Label(nextLeg.name.uppercased(), systemImage: nextLeg.symbol)
+                    .foregroundStyle(Palette.chalk)
+            } else {
+                Label("NO DEPARTURE", systemImage: "clock")
+                    .foregroundStyle(Palette.steel)
+            }
             Spacer()
             if let platform = trip.platform {
                 Text("PL \(platform)")
@@ -69,8 +76,8 @@ struct TripWidgetView: View {
     private var status: some View {
         HStack(spacing: 6) {
             Label(trip.status.uppercased(), systemImage: trip.statusSymbol)
-                .foregroundStyle(trip.isDelayed ? Palette.signal : Palette.steel)
-            if trip.isDelayed, let departure = trip.departure {
+                .foregroundStyle(trip.statusColor)
+            if (trip.isDelayed || trip.isCancelled || trip.isSkipped), let departure = trip.departure {
                 Text(departure).strikethrough().foregroundStyle(Palette.steel)
             }
         }
@@ -78,7 +85,7 @@ struct TripWidgetView: View {
     }
 
     private var updated: some View {
-        Text("SAMPLE · UPDATED \(trip.updated)")
+        Text("\(trip.freshnessLabel) \(trip.updated)")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(Palette.steel)
     }
