@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum JourneyDirection: String, Codable {
+enum JourneyDirection: String, Codable, CaseIterable {
     case toVeghel = "to_veghel"
     case toBlerick = "to_blerick"
 }
@@ -66,6 +66,10 @@ struct JourneySnapshot: Codable {
     let fetchedAt: Date
     let freshness: JourneyFreshness
     let legs: [JourneyLeg]
+
+    func withFreshness(_ freshness: JourneyFreshness) -> JourneySnapshot {
+        JourneySnapshot(direction: direction, fetchedAt: fetchedAt, freshness: freshness, legs: legs)
+    }
 
     static func sample(direction: JourneyDirection) -> JourneySnapshot {
         switch direction {
@@ -246,15 +250,42 @@ enum JourneyPreferences {
     static let homeKey = "home"
     static let workKey = "work"
     static let showsTripHomeKey = "showsTripHome"
+    static let serviceURLKey = "serviceURL"
     static let defaultHome = "Blerick"
     static let defaultWork = "Corridor, Veghel"
     static let defaults = UserDefaults(suiteName: appGroupIdentifier)!
 
+    private static func snapshotKey(for direction: JourneyDirection) -> String {
+        "journeySnapshot.\(direction.rawValue)"
+    }
+
+    static func cachedSnapshot(for direction: JourneyDirection) -> JourneySnapshot? {
+        guard let data = defaults.data(forKey: snapshotKey(for: direction)) else { return nil }
+        return try? JourneyJSON.decode(data)
+    }
+
+    static func cachedSnapshots() -> [JourneyDirection: JourneySnapshot] {
+        Dictionary(uniqueKeysWithValues: JourneyDirection.allCases.compactMap { direction in
+            cachedSnapshot(for: direction).map { (direction, $0) }
+        })
+    }
+
+    static func cache(_ snapshot: JourneySnapshot) {
+        guard let data = try? JourneyJSON.encode(snapshot) else { return }
+        defaults.set(data, forKey: snapshotKey(for: snapshot.direction))
+    }
+
+    static var selectedDirection: JourneyDirection {
+        defaults.bool(forKey: showsTripHomeKey) ? .toBlerick : .toVeghel
+    }
+
     static var savedTrip: Trip {
-        Trip.sample(
+        let direction = selectedDirection
+        let snapshot = cachedSnapshot(for: direction) ?? .sample(direction: direction)
+        return Trip(
+            snapshot: snapshot,
             home: defaults.string(forKey: homeKey) ?? defaultHome,
-            work: defaults.string(forKey: workKey) ?? defaultWork,
-            showsTripHome: defaults.bool(forKey: showsTripHomeKey)
+            work: defaults.string(forKey: workKey) ?? defaultWork
         )
     }
 }
