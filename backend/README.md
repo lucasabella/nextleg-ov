@@ -84,3 +84,4 @@ In NextLeg, enter `http://<pi-address>:8080` while the iPhone is on the same Wi-
 
 - `GET /health` returns `{"status":"ok"}`.
 - `GET /api/v1/journey?direction=to_veghel` and `direction=to_blerick` return the next scheduled two-leg connection in the shared JSON model. If no connection is found in the available feed dates, the response has an empty `legs` array. Static responses omit real-time expected times and platform values.
+- Add `departure=07:10` (local time, `HH:mm`) to get the first connection whose first leg leaves at or after that time. If today's has already left, the response uses the next day's.

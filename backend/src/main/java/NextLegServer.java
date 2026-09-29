@@ -22,6 +22,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
@@ -111,8 +112,14 @@ public final class NextLegServer {
         }
 
         String direction;
+        LocalTime usualDeparture;
         try {
-            direction = requestedDirection(exchange.getRequestURI().getRawQuery());
+            String query = exchange.getRequestURI().getRawQuery();
+            direction = queryParameter(query, "direction");
+            if (direction == null || direction.isBlank()) {
+                throw new IllegalArgumentException("Missing required query parameter: direction.");
+            }
+            usualDeparture = requestedDeparture(queryParameter(query, "departure"));
         } catch (IllegalArgumentException exception) {
             send(exchange, 400, jsonError(exception.getMessage()));
             return;
@@ -127,30 +134,45 @@ public final class NextLegServer {
             send(exchange, 503, "{\"error\":\"OpenOV schedule feed is unavailable and no cached schedule is available.\"}");
             return;
         }
-        JourneyChoice choice = findNextJourney(state.data(), direction, Instant.now(), transferBufferMinutes, maxTransferWaitMinutes);
+        Instant now = Instant.now();
+        JourneyChoice choice = usualDeparture == null
+                ? findNextJourney(state.data(), direction, now, transferBufferMinutes, maxTransferWaitMinutes)
+                : findUsualJourney(state.data(), direction, usualDeparture, now, transferBufferMinutes, maxTransferWaitMinutes);
         send(exchange, 200, journeyJson(direction, choice, state));
     }
 
-    private static JourneyChoice findNextJourney(ScheduleData data, String direction, Instant now,
+    /** The first journey leaving at or after the usual time. Once today's has left, it looks at the next days. */
+    private static JourneyChoice findUsualJourney(ScheduleData data, String direction, LocalTime usualDeparture,
+                                                  Instant now, int bufferMinutes, int maxWaitMinutes) {
+        LocalDate today = now.atZone(ZONE).toLocalDate();
+        for (int day = 0; day < 7; day++) {
+            Instant usual = today.plusDays(day).atTime(usualDeparture).atZone(ZONE).toInstant();
+            JourneyChoice choice = findNextJourney(data, direction, usual, bufferMinutes, maxWaitMinutes);
+            if (choice != null && choice.first().departure().isAfter(now)) return choice;
+        }
+        return null;
+    }
+
+    private static JourneyChoice findNextJourney(ScheduleData data, String direction, Instant earliest,
                                                  int bufferMinutes, int maxWaitMinutes) {
-        Map<PathKey, List<LegInstance>> instances = data.instances(now.atZone(ZONE).toLocalDate());
+        Map<PathKey, List<LegInstance>> instances = data.instances(earliest.atZone(ZONE).toLocalDate());
         if (direction.equals("to_veghel")) {
             return choose(instances.get(PathKey.TO_VEGHEL_TRAIN), instances.get(PathKey.TO_VEGHEL_BUS),
-                    now, bufferMinutes, maxWaitMinutes);
+                    earliest, bufferMinutes, maxWaitMinutes);
         }
         JourneyChoice viaDenBosch = choose(instances.get(PathKey.TO_BLERICK_BUS_306),
-                instances.get(PathKey.TO_BLERICK_TRAIN_DEN_BOSCH), now, bufferMinutes, maxWaitMinutes);
+                instances.get(PathKey.TO_BLERICK_TRAIN_DEN_BOSCH), earliest, bufferMinutes, maxWaitMinutes);
         JourneyChoice viaEindhoven = choose(instances.get(PathKey.TO_BLERICK_BUS_305),
-                instances.get(PathKey.TO_BLERICK_TRAIN_EINDHOVEN), now, bufferMinutes, maxWaitMinutes);
+                instances.get(PathKey.TO_BLERICK_TRAIN_EINDHOVEN), earliest, bufferMinutes, maxWaitMinutes);
         return earlier(viaDenBosch, viaEindhoven);
     }
 
     private static JourneyChoice choose(List<LegInstance> firstLegs, List<LegInstance> secondLegs,
-                                        Instant now, int bufferMinutes, int maxWaitMinutes) {
+                                        Instant earliest, int bufferMinutes, int maxWaitMinutes) {
         JourneyChoice best = null;
         if (firstLegs == null || secondLegs == null) return null;
         for (LegInstance first : firstLegs) {
-            if (!first.departure().isAfter(now)) continue;
+            if (first.departure().isBefore(earliest)) continue;
             Instant earliestConnection = first.arrival().plusSeconds(bufferMinutes * 60L);
             Instant latestConnection = first.arrival().plusSeconds(maxWaitMinutes * 60L);
             for (LegInstance second : secondLegs) {
@@ -198,11 +220,18 @@ public final class NextLegServer {
         return PATHS.stream().filter(path -> path.key() == key).findFirst().orElseThrow();
     }
 
-    private static String requestedDirection(String query) {
-        if (query == null || query.isEmpty()) {
-            throw new IllegalArgumentException("Missing required query parameter: direction.");
+    private static LocalTime requestedDeparture(String departure) {
+        if (departure == null) return null;
+        try {
+            return LocalTime.parse(departure);
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException("Invalid departure. Use HH:mm, such as 07:10.");
         }
-        String direction = null;
+    }
+
+    private static String queryParameter(String query, String name) {
+        if (query == null || query.isEmpty()) return null;
+        String result = null;
         for (String pair : query.split("&")) {
             int separator = pair.indexOf('=');
             String rawKey = separator < 0 ? pair : pair.substring(0, separator);
@@ -215,15 +244,12 @@ public final class NextLegServer {
             } catch (IllegalArgumentException exception) {
                 throw new IllegalArgumentException("Invalid query encoding.");
             }
-            if (key.equals("direction")) {
-                if (direction != null) throw new IllegalArgumentException("Use exactly one direction query parameter.");
-                direction = value;
+            if (key.equals(name)) {
+                if (result != null) throw new IllegalArgumentException("Use exactly one " + name + " query parameter.");
+                result = value;
             }
         }
-        if (direction == null || direction.isBlank()) {
-            throw new IllegalArgumentException("Missing required query parameter: direction.");
-        }
-        return direction;
+        return result;
     }
 
     private static String jsonError(String message) {

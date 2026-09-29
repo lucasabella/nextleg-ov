@@ -7,6 +7,8 @@ struct HomeView: View {
     @AppStorage(JourneyPreferences.workKey, store: JourneyPreferences.defaults) private var work = JourneyPreferences.defaultWork
     @AppStorage(JourneyPreferences.showsTripHomeKey, store: JourneyPreferences.defaults) private var showsTripHome = false
     @AppStorage(JourneyPreferences.serviceURLKey, store: JourneyPreferences.defaults) private var serviceURL = ""
+    @AppStorage(JourneyPreferences.usualDepartureKey(for: .toVeghel), store: JourneyPreferences.defaults) private var usualToWork = ""
+    @AppStorage(JourneyPreferences.usualDepartureKey(for: .toBlerick), store: JourneyPreferences.defaults) private var usualToHome = ""
 
     @State private var snapshots = JourneyPreferences.cachedSnapshots()
     @State private var connectionState: ConnectionState = .notChecked
@@ -69,6 +71,15 @@ struct HomeView: View {
                 }
 
                 Section {
+                    UsualDepartureRow(title: "To work", defaultTime: "07:00", time: $usualToWork)
+                    UsualDepartureRow(title: "To home", defaultTime: "17:00", time: $usualToHome)
+                } header: {
+                    Text("Usual departure")
+                } footer: {
+                    Text("Set when you leave your first stop. NextLeg shows the first journey at or after that time, today or the next day. When off, it shows the next journey.")
+                }
+
+                Section {
                     TextField("http://nextleg.local:8080", text: $serviceURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
@@ -114,6 +125,8 @@ struct HomeView: View {
             .onChange(of: home) { _, _ in reloadWidget() }
             .onChange(of: work) { _, _ in reloadWidget() }
             .onChange(of: showsTripHome) { _, _ in reloadWidget() }
+            .onChange(of: usualToWork) { _, _ in reloadWidget() }
+            .onChange(of: usualToHome) { _, _ in reloadWidget() }
             .onChange(of: serviceURL) { _, _ in
                 connectionState = .notChecked
                 journeyMessage = nil
@@ -147,7 +160,11 @@ struct HomeView: View {
         defer { isRefreshingJourney = false }
 
         do {
-            let snapshot = try await JourneyService().fetchJourney(at: serviceURL, direction: selectedDirection)
+            let snapshot = try await JourneyService().fetchJourney(
+                at: serviceURL,
+                direction: selectedDirection,
+                usualDeparture: JourneyPreferences.usualDeparture(for: selectedDirection)
+            )
             snapshots[selectedDirection] = snapshot
             JourneyPreferences.cache(snapshot)
             connectionState = .connected
@@ -186,6 +203,36 @@ struct HomeView: View {
 
     private func reloadWidget() {
         WidgetCenter.shared.reloadTimelines(ofKind: JourneyPreferences.widgetKind)
+    }
+}
+
+/// A switch for one direction's usual departure, with a time picker while it is on.
+/// Stores the time as "HH:mm", or an empty string when off.
+private struct UsualDepartureRow: View {
+    let title: String
+    let defaultTime: String
+    @Binding var time: String
+
+    var body: some View {
+        Toggle(title, isOn: Binding {
+            !time.isEmpty
+        } set: { isOn in
+            time = isOn ? defaultTime : ""
+        }.animation())
+
+        if !time.isEmpty {
+            DatePicker("Leaves at", selection: date, displayedComponents: .hourAndMinute)
+        }
+    }
+
+    private var date: Binding<Date> {
+        Binding {
+            let parts = time.split(separator: ":").compactMap { Int($0) }
+            return Calendar.current.date(bySettingHour: parts.first ?? 0, minute: parts.last ?? 0, second: 0, of: .now) ?? .now
+        } set: { date in
+            let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+            time = String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
+        }
     }
 }
 

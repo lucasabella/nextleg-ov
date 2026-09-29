@@ -274,6 +274,16 @@ enum JourneyPreferences {
         })
     }
 
+    static func usualDepartureKey(for direction: JourneyDirection) -> String {
+        "usualDeparture.\(direction.rawValue)"
+    }
+
+    /// The usual departure as "HH:mm", or nil to follow the next journey.
+    static func usualDeparture(for direction: JourneyDirection) -> String? {
+        let value = defaults.string(forKey: usualDepartureKey(for: direction)) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
     static func cache(_ snapshot: JourneySnapshot) {
         guard let data = try? JourneyJSON.encode(snapshot) else { return }
         defaults.set(data, forKey: snapshotKey(for: snapshot.direction))

@@ -40,7 +40,11 @@ struct NextLegProvider: TimelineProvider {
         guard !serviceURL.isEmpty else { return }
         let direction = JourneyPreferences.selectedDirection
         do {
-            JourneyPreferences.cache(try await JourneyService().fetchJourney(at: serviceURL, direction: direction))
+            JourneyPreferences.cache(try await JourneyService().fetchJourney(
+                at: serviceURL,
+                direction: direction,
+                usualDeparture: JourneyPreferences.usualDeparture(for: direction)
+            ))
         } catch {
             guard let cached = JourneyPreferences.cachedSnapshot(for: direction), cached.freshness != .sample else { return }
             JourneyPreferences.cache(cached.withFreshness(.stale))

@@ -8,12 +8,12 @@ struct JourneyService {
         }
     }
 
-    func fetchJourney(at serviceURL: String, direction: JourneyDirection) async throws -> JourneySnapshot {
-        let data = try await get(
-            serviceURL: serviceURL,
-            path: "/api/v1/journey",
-            direction: direction
-        )
+    func fetchJourney(at serviceURL: String, direction: JourneyDirection, usualDeparture: String?) async throws -> JourneySnapshot {
+        var query = [URLQueryItem(name: "direction", value: direction.rawValue)]
+        if let usualDeparture {
+            query.append(URLQueryItem(name: "departure", value: usualDeparture))
+        }
+        let data = try await get(serviceURL: serviceURL, path: "/api/v1/journey", query: query)
         let snapshot: JourneySnapshot
         do {
             snapshot = try JourneyJSON.decode(data)
@@ -26,14 +26,14 @@ struct JourneyService {
         return snapshot
     }
 
-    private func get(serviceURL: String, path: String, direction: JourneyDirection? = nil) async throws -> Data {
+    private func get(serviceURL: String, path: String, query: [URLQueryItem] = []) async throws -> Data {
         var components = try serviceComponents(serviceURL)
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = "/" + ([basePath, path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))]
             .filter { !$0.isEmpty }
             .joined(separator: "/"))
-        if let direction {
-            components.queryItems = [URLQueryItem(name: "direction", value: direction.rawValue)]
+        if !query.isEmpty {
+            components.queryItems = query
         }
         guard let url = components.url else { throw JourneyServiceError.invalidServiceURL }
 
