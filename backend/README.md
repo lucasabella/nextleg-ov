@@ -29,7 +29,46 @@ The first run downloads the OpenOV schedule archive, currently about 230 MB comp
 
 The service listens on port `8080` and all Pi network interfaces by default. `NEXTLEG_HOST`, `NEXTLEG_PORT`, and `NEXTLEG_DATA_DIR` can override the bind address, port, and cache directory. `NEXTLEG_TRANSFER_BUFFER_MINUTES` changes the minimum connection buffer, which cannot be lower than 10. `NEXTLEG_MAX_TRANSFER_WAIT_MINUTES` changes the maximum wait and cannot be lower than the minimum buffer. Defaults are 10 and 60 minutes.
 
-Keep the service on your trusted home network. Do not add a router port forward. Remote access is not configured. The service has no authentication.
+The service has no authentication. Do not add a router port forward. For access away from home, see below.
+
+## Run as a service
+
+Run the service on boot and restart it after a crash with systemd. Java compiles the source file at startup, so an update is `git pull` followed by a restart. Replace `pi` with your user.
+
+```sh
+sudo tee /etc/systemd/system/nextleg.service >/dev/null <<EOF
+[Unit]
+Description=NextLeg journey service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/nextleg-ov/backend
+ExecStart=/usr/bin/java -Xmx512m --add-modules jdk.httpserver src/main/java/NextLegServer.java
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now nextleg
+journalctl -u nextleg -f
+```
+
+Parsing the schedule peaks at about 270 MB of memory.
+
+## Reach it away from home
+
+[Tailscale Funnel](https://tailscale.com/kb/1223/funnel) can publish the service over HTTPS without a port forward. The phone does not need Tailscale. Put the service behind a long random path, because anyone with the full URL can read your journey:
+
+```sh
+SECRET=$(openssl rand -hex 16)
+sudo tailscale funnel --bg --https=10000 --set-path=/$SECRET http://127.0.0.1:8080
+tailscale funnel status
+```
+
+In NextLeg, enter the port `10000` address followed by the secret path, such as `https://raspberrypi.example.ts.net:10000/<secret>`. Treat it like a password. Other paths return 404. Remove it with `sudo tailscale funnel --https=10000 --set-path=/$SECRET off`.
 
 Find the Pi's local address with `hostname -I`. Check the service on the Pi:
 
