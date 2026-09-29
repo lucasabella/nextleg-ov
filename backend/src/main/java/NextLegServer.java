@@ -46,6 +46,10 @@ public final class NextLegServer {
     private static final ZoneId ZONE = ZoneId.of("Europe/Amsterdam");
     private static final Duration FEED_CHECK_INTERVAL = Duration.ofHours(6);
     private static final Duration RETRY_INTERVAL = Duration.ofMinutes(30);
+    // A phone notices it left the home or work area a few minutes after its first vehicle departs.
+    private static final Duration BOARDED_BEFORE = Duration.ofMinutes(30);
+    private static final Duration BOARDED_AFTER = Duration.ofMinutes(5);
+    private static final Duration BOARDED_NOTICE_DELAY = Duration.ofMinutes(2);
     private static final URI DEFAULT_FEED_URI = URI.create("https://gtfs.openov.nl/gtfs-rt/gtfs-openov-nl.zip");
     private static final DateTimeFormatter GTFS_DATE = DateTimeFormatter.BASIC_ISO_DATE;
     private static final DateTimeFormatter ISO_INSTANT = DateTimeFormatter.ISO_INSTANT;
@@ -115,6 +119,7 @@ public final class NextLegServer {
 
         String direction;
         LocalTime usualDeparture;
+        Instant boardedAt;
         try {
             String query = exchange.getRequestURI().getRawQuery();
             direction = queryParameter(query, "direction");
@@ -122,6 +127,7 @@ public final class NextLegServer {
                 throw new IllegalArgumentException("Missing required query parameter: direction.");
             }
             usualDeparture = requestedDeparture(queryParameter(query, "departure"));
+            boardedAt = requestedBoardedAt(queryParameter(query, "boardedAt"));
         } catch (IllegalArgumentException exception) {
             send(exchange, 400, jsonError(exception.getMessage()));
             return;
@@ -138,9 +144,13 @@ public final class NextLegServer {
         }
         Instant now = Instant.now();
         Map<String, TripUpdate> updates = realtime.current(state.data().tripIds(), now);
-        JourneyChoice choice = usualDeparture == null
-                ? findNextJourney(state.data(), updates, direction, now, transferBufferMinutes, maxTransferWaitMinutes)
-                : findUsualJourney(state.data(), updates, direction, usualDeparture, now, transferBufferMinutes, maxTransferWaitMinutes);
+        JourneyChoice choice = boardedAt == null ? null
+                : findBoardedJourney(state.data(), updates, direction, boardedAt, transferBufferMinutes, maxTransferWaitMinutes);
+        if (choice == null) {
+            choice = usualDeparture == null
+                    ? findNextJourney(state.data(), updates, direction, now, transferBufferMinutes, maxTransferWaitMinutes)
+                    : findUsualJourney(state.data(), updates, direction, usualDeparture, now, transferBufferMinutes, maxTransferWaitMinutes);
+        }
         send(exchange, 200, journeyJson(direction, choice, state, now));
     }
 
@@ -159,15 +169,46 @@ public final class NextLegServer {
     private static JourneyChoice findNextJourney(ScheduleData data, Map<String, TripUpdate> updates, String direction,
                                                  Instant earliest, int bufferMinutes, int maxWaitMinutes) {
         Map<PathKey, List<LegInstance>> instances = withRealtime(data.instances(earliest.atZone(ZONE).toLocalDate()), updates);
-        if (direction.equals("to_veghel")) {
-            return choose(instances.get(PathKey.TO_VEGHEL_TRAIN), instances.get(PathKey.TO_VEGHEL_BUS),
-                    earliest, bufferMinutes, maxWaitMinutes);
+        JourneyChoice best = null;
+        for (PathKey[] route : routes(direction)) {
+            best = earlier(best, choose(instances.get(route[0]), instances.get(route[1]), earliest, bufferMinutes, maxWaitMinutes));
         }
-        JourneyChoice viaDenBosch = choose(instances.get(PathKey.TO_BLERICK_BUS_306),
-                instances.get(PathKey.TO_BLERICK_TRAIN_DEN_BOSCH), earliest, bufferMinutes, maxWaitMinutes);
-        JourneyChoice viaEindhoven = choose(instances.get(PathKey.TO_BLERICK_BUS_305),
-                instances.get(PathKey.TO_BLERICK_TRAIN_EINDHOVEN), earliest, bufferMinutes, maxWaitMinutes);
-        return earlier(viaDenBosch, viaEindhoven);
+        return best;
+    }
+
+    /**
+     * The journey the phone is on, with its usual connection: the first leg that departed closest to when the
+     * phone is likely to have left, counted from 30 minutes before to 5 minutes after it left its start area.
+     * Null when no first leg fits.
+     */
+    private static JourneyChoice findBoardedJourney(ScheduleData data, Map<String, TripUpdate> updates, String direction,
+                                                    Instant boardedAt, int bufferMinutes, int maxWaitMinutes) {
+        Map<PathKey, List<LegInstance>> instances = withRealtime(data.instances(boardedAt.atZone(ZONE).toLocalDate()), updates);
+        Instant likelyDeparture = boardedAt.minus(BOARDED_NOTICE_DELAY);
+        JourneyChoice best = null;
+        long bestDistance = Long.MAX_VALUE;
+        for (PathKey[] route : routes(direction)) {
+            for (LegInstance first : instances.get(route[0])) {
+                if (first.departure().isBefore(boardedAt.minus(BOARDED_BEFORE))
+                        || first.departure().isAfter(boardedAt.plus(BOARDED_AFTER))) continue;
+                JourneyChoice candidate = choose(List.of(first), instances.get(route[1]), first.departure(), bufferMinutes, maxWaitMinutes);
+                long distance = Math.abs(Duration.between(likelyDeparture, first.departure()).toSeconds());
+                if (candidate != null && distance < bestDistance) {
+                    best = candidate;
+                    bestDistance = distance;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** The first and second leg of each way to travel in a direction. */
+    private static List<PathKey[]> routes(String direction) {
+        if (direction.equals("to_veghel")) {
+            return List.<PathKey[]>of(new PathKey[] {PathKey.TO_VEGHEL_TRAIN, PathKey.TO_VEGHEL_BUS});
+        }
+        return List.of(new PathKey[] {PathKey.TO_BLERICK_BUS_306, PathKey.TO_BLERICK_TRAIN_DEN_BOSCH},
+                new PathKey[] {PathKey.TO_BLERICK_BUS_305, PathKey.TO_BLERICK_TRAIN_EINDHOVEN});
     }
 
     /**
@@ -192,8 +233,8 @@ public final class NextLegServer {
                 }
                 Integer delay = from == null ? null : from.departureDelay();
                 int arrivalDelay = to == null || to.arrivalDelay() == null ? (delay == null ? 0 : delay) : to.arrivalDelay();
-                legs.add(new LegInstance(leg.path(), leg.tripId(), leg.serviceDate(), leg.scheduledDeparture(),
-                        leg.scheduledDeparture().plusSeconds(delay == null ? 0 : delay), leg.arrival().plusSeconds(arrivalDelay),
+                legs.add(new LegInstance(leg.path(), leg.tripId(), leg.serviceDate(), leg.scheduledDeparture(), leg.scheduledArrival(),
+                        leg.scheduledDeparture().plusSeconds(delay == null ? 0 : delay), leg.scheduledArrival().plusSeconds(arrivalDelay),
                         new Live(delay, from == null ? null : from.platform(), update.updatedAt())));
             }
             result.put(entry.getKey(), legs);
@@ -244,9 +285,13 @@ public final class NextLegServer {
         String destination = data.stopNames().getOrDefault(spec.toStop(), spec.toStop());
         StringBuilder json = new StringBuilder("{\"mode\":\"" + spec.mode() + "\",\"origin\":\"" + jsonEscape(origin)
                 + "\",\"destination\":\"" + jsonEscape(destination) + "\",\"scheduledDeparture\":\""
-                + ISO_INSTANT.format(instance.scheduledDeparture()) + "\"");
+                + ISO_INSTANT.format(instance.scheduledDeparture()) + "\",\"scheduledArrival\":\""
+                + ISO_INSTANT.format(instance.scheduledArrival()) + "\"");
         Live live = instance.live();
         if (live == null) return json.append(",\"status\":\"scheduled\"}").toString();
+        if (Math.abs(Duration.between(instance.scheduledArrival(), instance.arrival()).toSeconds()) >= 60) {
+            json.append(",\"expectedArrival\":\"").append(ISO_INSTANT.format(instance.arrival())).append('"');
+        }
         // Differences under a minute count as on time, like departure boards do.
         if (live.delaySeconds() != null && Math.abs(live.delaySeconds()) >= 60) {
             json.append(",\"expectedDeparture\":\"").append(ISO_INSTANT.format(instance.departure()))
@@ -269,6 +314,15 @@ public final class NextLegServer {
             return LocalTime.parse(departure);
         } catch (DateTimeParseException exception) {
             throw new IllegalArgumentException("Invalid departure. Use HH:mm, such as 07:10.");
+        }
+    }
+
+    private static Instant requestedBoardedAt(String boardedAt) {
+        if (boardedAt == null) return null;
+        try {
+            return Instant.parse(boardedAt);
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException("Invalid boardedAt. Use an ISO 8601 time, such as 2026-09-30T05:10:00Z.");
         }
     }
 
@@ -350,7 +404,7 @@ public final class NextLegServer {
     private record ScheduledLeg(PathKey path, String serviceId, String tripId, String departure, String arrival) {}
     /** One dated leg. Departure and arrival are the expected times when realtime data is known, else scheduled. */
     private record LegInstance(PathKey path, String tripId, LocalDate serviceDate, Instant scheduledDeparture,
-                               Instant departure, Instant arrival, Live live) {}
+                               Instant scheduledArrival, Instant departure, Instant arrival, Live live) {}
     private record Live(Integer delaySeconds, String platform, Instant updatedAt) {}
     private record StopUpdate(Integer arrivalDelay, Integer departureDelay, boolean skipped, String platform) {}
     private record TripUpdate(boolean cancelled, Map<String, StopUpdate> stops, Instant updatedAt) {}
@@ -391,7 +445,7 @@ public final class NextLegServer {
                             Instant arrival = serviceInstant(serviceDate, leg.arrival());
                             if (!arrival.isBefore(departure)) {
                                 result.get(leg.path()).add(new LegInstance(
-                                        leg.path(), leg.tripId(), serviceDate, departure, departure, arrival, null));
+                                        leg.path(), leg.tripId(), serviceDate, departure, arrival, departure, arrival, null));
                             }
                         } catch (IllegalArgumentException ignored) {
                         }
