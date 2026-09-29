@@ -125,6 +125,13 @@ struct HomeView: View {
             .onChange(of: serviceURL) { _, _ in
                 connectionState = .notChecked
                 journeyMessage = nil
+                for direction in JourneyDirection.allCases {
+                    guard let snapshot = snapshots[direction], snapshot.freshness != .sample else { continue }
+                    let staleSnapshot = snapshot.withFreshness(.stale)
+                    snapshots[direction] = staleSnapshot
+                    JourneyPreferences.cache(staleSnapshot)
+                }
+                reloadWidget()
             }
         }
         .tint(Palette.amber)
@@ -158,15 +165,18 @@ struct HomeView: View {
     }
 
     private func checkConnection() async {
+        let checkedURL = serviceURL
         isCheckingConnection = true
         connectionState = .checking
         journeyMessage = nil
         defer { isCheckingConnection = false }
 
         do {
-            try await JourneyService().checkHealth(at: serviceURL)
+            try await JourneyService().checkHealth(at: checkedURL)
+            guard serviceURL == checkedURL else { return }
             connectionState = .connected
         } catch {
+            guard serviceURL == checkedURL else { return }
             markSelectedSnapshotStale()
             connectionState = .failed(error.localizedDescription)
             journeyMessage = cachedMessage
@@ -176,18 +186,30 @@ struct HomeView: View {
 
     private func refreshJourney() async {
         guard !isRefreshingJourney, !serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let requestedDirection = selectedDirection
+        let requestedURL = serviceURL
+        let requestedDeparture = JourneyPreferences.usualDeparture(for: requestedDirection)
         isRefreshingJourney = true
         connectionState = .checking
         journeyMessage = nil
-        defer { isRefreshingJourney = false }
+        defer {
+            isRefreshingJourney = false
+            if serviceURL != requestedURL || selectedDirection != requestedDirection ||
+                JourneyPreferences.usualDeparture(for: requestedDirection) != requestedDeparture {
+                Task { await refreshJourney() }
+            }
+        }
 
         do {
             let snapshot = try await JourneyService().fetchJourney(
-                at: serviceURL,
-                direction: selectedDirection,
-                usualDeparture: JourneyPreferences.usualDeparture(for: selectedDirection)
+                at: requestedURL,
+                direction: requestedDirection,
+                usualDeparture: requestedDeparture
             )
-            snapshots[selectedDirection] = snapshot
+            guard serviceURL == requestedURL,
+                  selectedDirection == requestedDirection,
+                  JourneyPreferences.usualDeparture(for: requestedDirection) == requestedDeparture else { return }
+            snapshots[requestedDirection] = snapshot
             JourneyPreferences.cache(snapshot)
             connectionState = .connected
             switch snapshot.freshness {
@@ -200,6 +222,7 @@ struct HomeView: View {
             }
             reloadWidget()
         } catch {
+            guard serviceURL == requestedURL, selectedDirection == requestedDirection else { return }
             markSelectedSnapshotStale()
             connectionState = .failed(error.localizedDescription)
             journeyMessage = cachedMessage

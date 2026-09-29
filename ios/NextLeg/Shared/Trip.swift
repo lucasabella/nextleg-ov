@@ -176,6 +176,7 @@ struct Trip {
     var delayMinutes: Int?
     var platform: String?
     var updated: String
+    var fetchedAt: Date
     var legStatus: JourneyLegStatus
     var freshness: JourneyFreshness
 
@@ -201,8 +202,10 @@ struct Trip {
         delayMinutes = firstLeg?.delaySeconds.map { Int((Double($0) / 60).rounded()) }
         platform = firstLeg?.platform
         updated = Self.time(snapshot.fetchedAt)
+        fetchedAt = snapshot.fetchedAt
         legStatus = firstLeg?.status ?? .unknown
-        freshness = snapshot.freshness
+        freshness = snapshot.freshness == .fresh && Date.now.timeIntervalSince(snapshot.fetchedAt) > 20 * 60
+            ? .stale : snapshot.freshness
     }
 
     var origin: String { area ?? "From \(from)" }
@@ -220,7 +223,7 @@ struct Trip {
             delayMinutes.map { "\($0 > 0 ? "+" : "")\($0) min" } ?? "Delayed"
         case .cancelled: "Cancelled"
         case .skipped: "Stop skipped"
-        case .unknown: "No live times"
+        case .unknown: nextLeg == nil ? "No departures" : "No live times"
         }
     }
 

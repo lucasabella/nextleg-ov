@@ -185,15 +185,16 @@ public final class NextLegServer {
                 StopUpdate from = update == null ? null : update.stops().get(spec.fromStop());
                 StopUpdate to = update == null ? null : update.stops().get(spec.toStop());
                 if (update != null && (update.cancelled() || from != null && from.skipped() || to != null && to.skipped())) continue;
-                if (from == null || from.departureDelay() == null) {
+                if ((from == null || from.departureDelay() == null && from.platform() == null)
+                        && (to == null || to.arrivalDelay() == null)) {
                     legs.add(leg);
                     continue;
                 }
-                int delay = from.departureDelay();
-                int arrivalDelay = to == null || to.arrivalDelay() == null ? delay : to.arrivalDelay();
+                Integer delay = from == null ? null : from.departureDelay();
+                int arrivalDelay = to == null || to.arrivalDelay() == null ? (delay == null ? 0 : delay) : to.arrivalDelay();
                 legs.add(new LegInstance(leg.path(), leg.tripId(), leg.serviceDate(), leg.scheduledDeparture(),
-                        leg.scheduledDeparture().plusSeconds(delay), leg.arrival().plusSeconds(arrivalDelay),
-                        new Live(delay, from.platform(), update.updatedAt())));
+                        leg.scheduledDeparture().plusSeconds(delay == null ? 0 : delay), leg.arrival().plusSeconds(arrivalDelay),
+                        new Live(delay, from == null ? null : from.platform(), update.updatedAt())));
             }
             result.put(entry.getKey(), legs);
         }
@@ -247,11 +248,12 @@ public final class NextLegServer {
         Live live = instance.live();
         if (live == null) return json.append(",\"status\":\"scheduled\"}").toString();
         // Differences under a minute count as on time, like departure boards do.
-        if (Math.abs(live.delaySeconds()) >= 60) {
+        if (live.delaySeconds() != null && Math.abs(live.delaySeconds()) >= 60) {
             json.append(",\"expectedDeparture\":\"").append(ISO_INSTANT.format(instance.departure()))
                     .append("\",\"delaySeconds\":").append(live.delaySeconds());
         }
-        json.append(",\"status\":\"").append(live.delaySeconds() >= 60 ? "delayed" : "on_time").append('"');
+        json.append(",\"status\":\"").append(live.delaySeconds() == null ? "scheduled"
+                : live.delaySeconds() >= 60 ? "delayed" : "on_time").append('"');
         if (live.platform() != null) json.append(",\"platform\":\"").append(jsonEscape(live.platform())).append('"');
         if (live.updatedAt() != null) json.append(",\"sourceUpdatedAt\":\"").append(ISO_INSTANT.format(live.updatedAt())).append('"');
         return json.append('}').toString();
@@ -349,7 +351,7 @@ public final class NextLegServer {
     /** One dated leg. Departure and arrival are the expected times when realtime data is known, else scheduled. */
     private record LegInstance(PathKey path, String tripId, LocalDate serviceDate, Instant scheduledDeparture,
                                Instant departure, Instant arrival, Live live) {}
-    private record Live(int delaySeconds, String platform, Instant updatedAt) {}
+    private record Live(Integer delaySeconds, String platform, Instant updatedAt) {}
     private record StopUpdate(Integer arrivalDelay, Integer departureDelay, boolean skipped, String platform) {}
     private record TripUpdate(boolean cancelled, Map<String, StopUpdate> stops, Instant updatedAt) {}
     private record JourneyChoice(LegInstance first, LegInstance second) {}

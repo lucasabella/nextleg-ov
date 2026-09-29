@@ -21,6 +21,9 @@ struct NextLegProvider: TimelineProvider {
             let trip = JourneyPreferences.savedTrip
             var entries = [NextLegEntry(date: .now, trip: trip)]
             var reloadDate = Date.now.addingTimeInterval(15 * 60)
+            if trip.freshness == .fresh {
+                reloadDate = min(reloadDate, trip.fetchedAt.addingTimeInterval(20 * 60))
+            }
             if let directionChange = JourneyPreferences.directionMode.nextChange(after: .now) {
                 reloadDate = min(reloadDate, directionChange)
             }
