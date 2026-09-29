@@ -1,7 +1,6 @@
 import SwiftUI
 import WidgetKit
 
-/// Settings for the saved journey. The widget on the Home Screen is the main product.
 struct HomeView: View {
     @AppStorage(JourneyPreferences.homeKey, store: JourneyPreferences.defaults) private var home = JourneyPreferences.defaultHome
     @AppStorage(JourneyPreferences.workKey, store: JourneyPreferences.defaults) private var work = JourneyPreferences.defaultWork
@@ -27,101 +26,87 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TripWidgetView(trip: previewTrip, isMedium: true)
-                        .padding(16)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 164)
-                        .background(Palette.night, in: .rect(cornerRadius: 26))
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
-                } footer: {
-                    Text(previewTrip.freshness == .sample
-                         ? "Fictional sample data. Live transit data is not connected yet."
-                         : "Saved trip shown if the Pi service is unavailable.")
-                }
-
-                Section {
-                    LabeledContent {
-                        TextField("Station or stop", text: $home)
-                    } label: {
-                        Label("Home", systemImage: "house.fill")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Your next journey")
+                            .font(.largeTitle.bold())
+                            .foregroundStyle(Palette.chalk)
+                        Text("Choose the direction shown in your widget.")
+                            .font(.subheadline)
+                            .foregroundStyle(Palette.steel)
                     }
-                    LabeledContent {
-                        TextField("Station or stop", text: $work)
-                    } label: {
-                        Label("Work", systemImage: "briefcase.fill")
-                    }
-                } header: {
-                    Text("Journey")
-                }
-                .multilineTextAlignment(.trailing)
 
-                Section {
                     Picker("Direction", selection: $showsTripHome.animation()) {
                         Text("To work").tag(false)
                         Text("To home").tag(true)
                     }
                     .pickerStyle(.segmented)
-                } header: {
-                    Text("Direction")
-                } footer: {
-                    Text("The widget follows the direction you pick here.")
-                }
 
-                Section {
-                    UsualDepartureRow(title: "To work", defaultTime: "07:00", time: $usualToWork)
-                    UsualDepartureRow(title: "To home", defaultTime: "17:00", time: $usualToHome)
-                } header: {
-                    Text("Usual departure")
-                } footer: {
-                    Text("Set when you leave your first stop. NextLeg shows the first journey at or after that time, today or the next day. When off, it shows the next journey.")
-                }
+                    VStack(alignment: .leading, spacing: 12) {
+                        TripWidgetView(trip: previewTrip, isMedium: true)
+                            .padding(16)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 164)
+                            .background(Palette.night, in: .rect(cornerRadius: 26))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 26)
+                                    .strokeBorder(Palette.chalk.opacity(0.08))
+                            }
 
-                Section {
-                    TextField("http://nextleg.local:8080", text: $serviceURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    Button {
-                        Task { await checkConnection() }
-                    } label: {
-                        if isCheckingConnection {
-                            Label("Checking connection…", systemImage: "antenna.radiowaves.left.and.right")
-                        } else {
-                            Label("Check connection", systemImage: "antenna.radiowaves.left.and.right")
-                        }
+                        Label(freshnessMessage, systemImage: freshnessSymbol)
+                            .font(.footnote)
+                            .foregroundStyle(previewTrip.freshness == .fresh ? Palette.steel : Palette.amber)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .disabled(isCheckingConnection || isRefreshingJourney || serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                    Button {
-                        Task { await refreshJourney() }
-                    } label: {
-                        if isRefreshingJourney {
-                            Label("Loading journey…", systemImage: "arrow.clockwise")
-                        } else {
-                            Label("Refresh journey", systemImage: "arrow.clockwise")
+                    if serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        NavigationLink {
+                            settingsView
+                        } label: {
+                            Label("Set up live journeys", systemImage: "arrow.right")
+                                .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button {
+                            Task { await refreshJourney() }
+                        } label: {
+                            if isRefreshingJourney {
+                                ProgressView()
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Label("Refresh journey", systemImage: "arrow.clockwise")
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isCheckingConnection || isRefreshingJourney)
                     }
-                    .disabled(isCheckingConnection || isRefreshingJourney || serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    Label(connectionState.message, systemImage: connectionState.symbol)
-                        .foregroundStyle(connectionState.color)
 
                     if let journeyMessage {
                         Text(journeyMessage)
                             .font(.footnote)
                             .foregroundStyle(connectionState.isError ? Palette.signal : Palette.steel)
                     }
-                } header: {
-                    Text("Pi service")
-                } footer: {
-                    Text("Use HTTPS for remote services. HTTP is limited to local network addresses.")
+                }
+                .frame(maxWidth: 520)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 24)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color(hex: 0x15191F))
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        settingsView
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
                 }
             }
-            .navigationTitle("NextLeg")
+            .toolbarTitleDisplayMode(.inline)
             .onChange(of: home) { _, _ in reloadWidget() }
             .onChange(of: work) { _, _ in reloadWidget() }
             .onChange(of: showsTripHome) { _, _ in reloadWidget() }
@@ -134,6 +119,32 @@ struct HomeView: View {
         }
         .tint(Palette.amber)
         .preferredColorScheme(.dark)
+    }
+
+    private var freshnessMessage: String {
+        switch previewTrip.freshness {
+        case .fresh: "Live journey · updated \(previewTrip.updated)"
+        case .stale: "Saved journey · updated \(previewTrip.updated). Times may have changed."
+        case .sample: "Example journey. Times and stops are fictional."
+        }
+    }
+
+    private var freshnessSymbol: String {
+        previewTrip.freshness == .fresh ? "checkmark.circle" : "info.circle"
+    }
+
+    private var settingsView: some View {
+        JourneySettingsView(
+            home: $home,
+            work: $work,
+            usualToWork: $usualToWork,
+            usualToHome: $usualToHome,
+            serviceURL: $serviceURL,
+            connectionState: connectionState,
+            isCheckingConnection: isCheckingConnection,
+            isRefreshingJourney: isRefreshingJourney,
+            onCheckConnection: { Task { await checkConnection() } }
+        )
     }
 
     private func checkConnection() async {
@@ -203,6 +214,71 @@ struct HomeView: View {
 
     private func reloadWidget() {
         WidgetCenter.shared.reloadTimelines(ofKind: JourneyPreferences.widgetKind)
+    }
+}
+
+private struct JourneySettingsView: View {
+    @Binding var home: String
+    @Binding var work: String
+    @Binding var usualToWork: String
+    @Binding var usualToHome: String
+    @Binding var serviceURL: String
+    let connectionState: ConnectionState
+    let isCheckingConnection: Bool
+    let isRefreshingJourney: Bool
+    let onCheckConnection: () -> Void
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Home") {
+                    TextField("Station or stop", text: $home)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Work") {
+                    TextField("Station or stop", text: $work)
+                        .multilineTextAlignment(.trailing)
+                }
+            } header: {
+                Text("Stops")
+            } footer: {
+                Text("These names appear in your journey and widget.")
+            }
+
+            Section {
+                UsualDepartureRow(title: "To work", defaultTime: "07:00", time: $usualToWork)
+                UsualDepartureRow(title: "To home", defaultTime: "17:00", time: $usualToHome)
+            } header: {
+                Text("Usual departure")
+            } footer: {
+                Text("Set when you leave your first stop. NextLeg shows the first journey at or after that time, today or the next day. When off, it shows the next journey.")
+            }
+
+            Section {
+                TextField("http://nextleg.local:8080", text: $serviceURL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("Service address")
+
+                Button(action: onCheckConnection) {
+                    if isCheckingConnection {
+                        Label("Checking connection…", systemImage: "antenna.radiowaves.left.and.right")
+                    } else {
+                        Label("Check connection", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                }
+                .disabled(isCheckingConnection || isRefreshingJourney || serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Label(connectionState.message, systemImage: connectionState.symbol)
+                    .foregroundStyle(connectionState.color)
+            } header: {
+                Text("Data source")
+            } footer: {
+                Text("Use HTTPS outside your local network. HTTP works for local addresses only.")
+            }
+        }
+        .navigationTitle("Settings")
     }
 }
 
