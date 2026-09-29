@@ -150,6 +150,7 @@ struct Trip {
     var nextLeg: Mode?
     var followingLeg: Mode?
     var departure: String?
+    var departureDate: Date?
     var expected: String?
     var delayMinutes: Int?
     var platform: String?
@@ -168,6 +169,9 @@ struct Trip {
         nextLeg = firstLeg?.mode
         followingLeg = secondLeg?.mode
         departure = firstLeg.map { Self.time($0.scheduledDeparture) }
+        if let firstLeg, firstLeg.status != .cancelled, firstLeg.status != .skipped {
+            departureDate = firstLeg.expectedDeparture ?? firstLeg.scheduledDeparture
+        }
         if let expectedDeparture = firstLeg?.expectedDeparture {
             expected = Self.time(expectedDeparture)
         } else {

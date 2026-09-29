@@ -91,6 +91,50 @@ struct TripWidgetView: View {
     }
 }
 
+/// Lock Screen widget. iOS draws it in one tint, so it uses text styles instead of colors.
+struct LockScreenTripView: View {
+    let trip: Trip
+    let date: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Label("→ \(trip.to)", systemImage: trip.nextLeg?.symbol ?? "clock")
+                .font(.caption.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(trip.shownTime)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .widgetAccentable()
+                if let countdown {
+                    Text(countdown)
+                        .font(.caption.weight(.semibold))
+                }
+            }
+            Text(details)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .labelStyle(TightLabelStyle())
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var countdown: String? {
+        guard let departure = trip.departureDate else { return nil }
+        let minutes = Int((departure.timeIntervalSince(date) / 60).rounded(.up))
+        if minutes <= 0 { return "Departed" }
+        return minutes < 60 ? "in \(minutes) min" : "in \(minutes / 60) h \(minutes % 60) min"
+    }
+
+    private var details: String {
+        var parts: [String] = []
+        if trip.isDelayed || trip.isCancelled || trip.isSkipped { parts.append(trip.status.uppercased()) }
+        if let platform = trip.platform { parts.append("PL \(platform)") }
+        parts.append("\(trip.freshnessLabel) \(trip.updated)")
+        return parts.joined(separator: " · ")
+    }
+}
+
 /// Icon and title close together, also inside a Form where labels get a wide icon column.
 private struct TightLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {

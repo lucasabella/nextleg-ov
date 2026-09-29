@@ -18,9 +18,20 @@ struct NextLegProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<NextLegEntry>) -> Void) {
         Task {
             await refreshSavedJourney()
-            let entry = NextLegEntry(date: .now, trip: JourneyPreferences.savedTrip)
-            let timeline = Timeline(entries: [entry], policy: .after(.now.addingTimeInterval(15 * 60)))
-            completion(timeline)
+            let trip = JourneyPreferences.savedTrip
+            var entries = [NextLegEntry(date: .now, trip: trip)]
+            var reloadDate = Date.now.addingTimeInterval(15 * 60)
+            // One entry per whole minute before departure keeps the countdown current until the next
+            // reload. The last one lands on the departure itself, then the widget asks for the next leg.
+            if let departure = trip.departureDate, departure > .now {
+                reloadDate = min(reloadDate, departure.addingTimeInterval(60))
+                let firstMinute = Int(departure.timeIntervalSinceNow / 60)
+                let lastMinute = max(0, Int((departure.timeIntervalSince(reloadDate) / 60).rounded(.up)))
+                for minute in stride(from: firstMinute, through: lastMinute, by: -1) {
+                    entries.append(NextLegEntry(date: departure.addingTimeInterval(Double(-minute * 60)), trip: trip))
+                }
+            }
+            completion(Timeline(entries: entries, policy: .after(reloadDate)))
         }
     }
 
@@ -42,9 +53,14 @@ struct NextLegWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        TripWidgetView(trip: entry.trip, isMedium: family == .systemMedium)
-            .environment(\.colorScheme, .dark)
-            .containerBackground(Palette.night, for: .widget)
+        if family == .accessoryRectangular {
+            LockScreenTripView(trip: entry.trip, date: entry.date)
+                .containerBackground(.clear, for: .widget)
+        } else {
+            TripWidgetView(trip: entry.trip, isMedium: family == .systemMedium)
+                .environment(\.colorScheme, .dark)
+                .containerBackground(Palette.night, for: .widget)
+        }
     }
 }
 
@@ -57,7 +73,7 @@ struct NextLegWidget: Widget {
         }
         .configurationDisplayName("Next leg")
         .description("Your next train or bus.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
     }
 }
 
@@ -68,6 +84,12 @@ struct NextLegWidget: Widget {
 }
 
 #Preview(as: .systemMedium) {
+    NextLegWidget()
+} timeline: {
+    NextLegEntry(date: .now, trip: .toVeghel)
+}
+
+#Preview(as: .accessoryRectangular) {
     NextLegWidget()
 } timeline: {
     NextLegEntry(date: .now, trip: .toVeghel)
