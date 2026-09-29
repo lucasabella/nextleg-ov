@@ -382,6 +382,7 @@
 				CODE_SIGN_ENTITLEMENTS = NextLeg/NextLeg.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 235ZNB2Y82;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -423,6 +424,7 @@
 				CODE_SIGN_ENTITLEMENTS = NextLeg/NextLeg.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 235ZNB2Y82;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -465,6 +467,7 @@
 				CODE_SIGN_ENTITLEMENTS = NextLegWidget/NextLegWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 235ZNB2Y82;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NextLegWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NextLegWidget;
@@ -497,6 +500,7 @@
 				CODE_SIGN_ENTITLEMENTS = NextLegWidget/NextLegWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 235ZNB2Y82;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NextLegWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NextLegWidget;
