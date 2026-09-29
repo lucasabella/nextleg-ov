@@ -27,9 +27,15 @@ struct TripWidgetView: View {
                             .lineLimit(2)
                         Spacer(minLength: 0)
                         if let followingLeg = trip.followingLeg {
-                            Label("THEN \(followingLeg.name.uppercased())", systemImage: followingLeg.symbol)
-                                .font(.caption.weight(.heavy))
-                                .foregroundStyle(Palette.steel)
+                            HStack(spacing: 4) {
+                                Label("THEN \(followingLeg.name.uppercased())", systemImage: followingLeg.symbol)
+                                    .foregroundStyle(Palette.steel)
+                                if let followingStatus = trip.followingStatus {
+                                    Text(followingStatus)
+                                        .foregroundStyle(Palette.signal)
+                                }
+                            }
+                            .font(.caption.weight(.heavy))
                         }
                         updated
                     }
@@ -101,12 +107,15 @@ struct LockScreenTripView: View {
             Label("→ \(trip.to)", systemImage: trip.nextLeg?.symbol ?? "clock")
                 .font(.caption.weight(.semibold))
             HStack(alignment: .firstTextBaseline, spacing: 6) {
+                // The time keeps its full width. The countdown shrinks when the widget is narrow.
                 Text(trip.shownTime)
                     .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .fixedSize()
                     .widgetAccentable()
                 if let countdown {
                     Text(countdown)
                         .font(.caption.weight(.semibold))
+                        .minimumScaleFactor(0.6)
                 }
             }
             Text(details)
@@ -126,12 +135,68 @@ struct LockScreenTripView: View {
         return minutes < 60 ? "in \(minutes) min" : "in \(minutes / 60) h \(minutes % 60) min"
     }
 
+    /// Short enough for the widget width: the update time only shows when no delay needs the room.
     private var details: String {
         var parts: [String] = []
-        if trip.isDelayed || trip.isCancelled || trip.isSkipped { parts.append(trip.status.uppercased()) }
+        let hasProblem = trip.isDelayed || trip.isCancelled || trip.isSkipped
+        if hasProblem { parts.append(trip.status.uppercased()) }
         if let platform = trip.platform { parts.append("PL \(platform)") }
-        parts.append("\(trip.freshnessLabel) \(trip.updated)")
+        switch trip.freshness {
+        case .fresh: if !hasProblem { parts.append("UPDATED \(trip.updated)") }
+        case .stale: parts.append("OLD DATA")
+        case .sample: parts.append("SAMPLE")
+        }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Small round Lock Screen widget that shows at a glance whether the journey runs late.
+struct DelayBadgeView: View {
+    let trip: Trip
+
+    var body: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            VStack(spacing: 0) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                title
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .widgetAccentable()
+                Text(caption)
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .padding(6)
+        }
+    }
+
+    private var symbol: String {
+        if trip.freshness == .stale { return "exclamationmark.triangle" }
+        return trip.worstLeg?.mode.symbol ?? "clock"
+    }
+
+    /// Old data still shows the last known status, with a warning symbol and caption.
+    private var title: Text {
+        switch trip.worstLeg?.status {
+        case .delayed: return Text("+\(trip.worstLeg?.delayMinutes ?? 0)")
+        case .onTime: return Text(Image(systemName: "checkmark"))
+        case .cancelled, .skipped: return Text(Image(systemName: "xmark"))
+        default: return Text("--")
+        }
+    }
+
+    private var caption: String {
+        if trip.freshness == .stale { return "OLD DATA" }
+        if trip.freshness == .sample { return "SAMPLE" }
+        switch trip.worstLeg?.status {
+        case .delayed: return "MIN LATE"
+        case .onTime: return "ON TIME"
+        case .cancelled: return "CANCELLED"
+        case .skipped: return "SKIPPED"
+        default: return "NO LIVE"
+        }
     }
 }
 

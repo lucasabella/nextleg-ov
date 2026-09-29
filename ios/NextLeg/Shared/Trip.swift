@@ -80,6 +80,8 @@ struct JourneyLeg: Codable {
         self.platform = platform
         self.sourceUpdatedAt = sourceUpdatedAt
     }
+
+    var delayMinutes: Int? { delaySeconds.map { Int((Double($0) / 60).rounded()) } }
 }
 
 struct JourneySnapshot: Codable {
@@ -179,6 +181,10 @@ struct Trip {
     var fetchedAt: Date
     var legStatus: JourneyLegStatus
     var freshness: JourneyFreshness
+    /// The leg that needs the most attention: cancelled first, then the biggest delay, then on time.
+    var worstLeg: JourneyLeg?
+    /// Short problem of the second leg, like "+7 MIN". Nil when it runs as planned.
+    var followingStatus: String?
 
     init(snapshot: JourneySnapshot, home: String, work: String) {
         let goesHome = snapshot.direction == .toBlerick
@@ -199,13 +205,29 @@ struct Trip {
         } else {
             expected = nil
         }
-        delayMinutes = firstLeg?.delaySeconds.map { Int((Double($0) / 60).rounded()) }
+        delayMinutes = firstLeg?.delayMinutes
         platform = firstLeg?.platform
         updated = Self.time(snapshot.fetchedAt)
         fetchedAt = snapshot.fetchedAt
         legStatus = firstLeg?.status ?? .unknown
         freshness = snapshot.freshness == .fresh && Date.now.timeIntervalSince(snapshot.fetchedAt) > 20 * 60
             ? .stale : snapshot.freshness
+        worstLeg = snapshot.legs.max { Self.attention($0) < Self.attention($1) }
+        switch secondLeg?.status {
+        case .delayed: followingStatus = "+\(secondLeg?.delayMinutes ?? 0) MIN"
+        case .cancelled: followingStatus = "CANCELLED"
+        case .skipped: followingStatus = "SKIPPED"
+        default: followingStatus = nil
+        }
+    }
+
+    private static func attention(_ leg: JourneyLeg) -> Int {
+        switch leg.status {
+        case .cancelled, .skipped: Int.max
+        case .delayed: 1_000 + (leg.delaySeconds ?? 0)
+        case .onTime: 1
+        case .scheduled, .unknown: 0
+        }
     }
 
     var origin: String { area ?? "From \(from)" }

@@ -63,10 +63,14 @@ struct NextLegWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        if family == .accessoryRectangular {
+        switch family {
+        case .accessoryRectangular:
             LockScreenTripView(trip: entry.trip, date: entry.date)
                 .containerBackground(.clear, for: .widget)
-        } else {
+        case .accessoryCircular:
+            DelayBadgeView(trip: entry.trip)
+                .containerBackground(.clear, for: .widget)
+        default:
             TripWidgetView(trip: entry.trip, isMedium: family == .systemMedium)
                 .environment(\.colorScheme, .dark)
                 .containerBackground(Palette.night, for: .widget)
@@ -82,8 +86,8 @@ struct NextLegWidget: Widget {
             NextLegWidgetView(entry: entry)
         }
         .configurationDisplayName("Next leg")
-        .description("Your next train or bus.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
+        .description("Your next train or bus, and whether it runs late.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular])
     }
 }
 
@@ -100,6 +104,12 @@ struct NextLegWidget: Widget {
 }
 
 #Preview(as: .accessoryRectangular) {
+    NextLegWidget()
+} timeline: {
+    NextLegEntry(date: .now, trip: .toVeghel)
+}
+
+#Preview(as: .accessoryCircular) {
     NextLegWidget()
 } timeline: {
     NextLegEntry(date: .now, trip: .toVeghel)
