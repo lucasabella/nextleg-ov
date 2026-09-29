@@ -50,6 +50,8 @@ WorkingDirectory=/home/pi/nextleg-ov/backend
 ExecStart=/usr/bin/java -Xmx512m --add-modules jdk.httpserver src/main/java/NextLegServer.java
 Restart=on-failure
 RestartSec=10
+# Java exits with 143 on SIGTERM, which is a normal stop.
+SuccessExitStatus=143
 
 [Install]
 WantedBy=multi-user.target
