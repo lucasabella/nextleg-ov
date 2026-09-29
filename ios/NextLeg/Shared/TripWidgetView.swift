@@ -63,7 +63,7 @@ struct TripWidgetView: View {
     private var leg: some View {
         HStack {
             if let nextLeg = trip.nextLeg {
-                Label(nextLeg.name.uppercased(), systemImage: nextLeg.symbol)
+                Label((trip.phaseTitle ?? nextLeg.name).uppercased(), systemImage: nextLeg.symbol)
                     .foregroundStyle(Palette.chalk)
             } else {
                 Label("NO DEPARTURE", systemImage: "clock")
@@ -139,6 +139,7 @@ struct LockScreenTripView: View {
     private var details: String {
         var parts: [String] = []
         let hasProblem = trip.isDelayed || trip.isCancelled || trip.isSkipped
+        if let phaseTitle = trip.phaseTitle { parts.append(phaseTitle.uppercased()) }
         if hasProblem { parts.append(trip.status.uppercased()) }
         if let platform = trip.platform { parts.append("PL \(platform)") }
         switch trip.freshness {

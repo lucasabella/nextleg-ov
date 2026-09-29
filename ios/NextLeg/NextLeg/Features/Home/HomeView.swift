@@ -8,6 +8,9 @@ struct HomeView: View {
     @AppStorage(JourneyPreferences.serviceURLKey, store: JourneyPreferences.defaults) private var serviceURL = ""
     @AppStorage(JourneyPreferences.usualDepartureKey(for: .toVeghel), store: JourneyPreferences.defaults) private var usualToWork = ""
     @AppStorage(JourneyPreferences.usualDepartureKey(for: .toBlerick), store: JourneyPreferences.defaults) private var usualToHome = ""
+    @AppStorage(JourneyPreferences.lastAreaKey, store: JourneyPreferences.defaults) private var lastArea = ""
+    @AppStorage(JourneyPreferences.boardedAtKey, store: JourneyPreferences.defaults) private var boardedAt = 0.0
+    @ObservedObject private var areas = AreaMonitor.shared
 
     @State private var snapshots = JourneyPreferences.cachedSnapshots()
     @State private var connectionState: ConnectionState = .notChecked
@@ -17,12 +20,19 @@ struct HomeView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var selectedDirection: JourneyDirection {
-        directionMode.direction(at: .now)
+        directionMode.direction(at: .now, lastArea: Area(rawValue: lastArea))
     }
 
     private var previewTrip: Trip {
         let snapshot = snapshots[selectedDirection] ?? .sample(direction: selectedDirection)
-        return Trip(snapshot: snapshot, home: home, work: work)
+        return Trip(snapshot: snapshot, home: home, work: work,
+                    tracking: JourneyPreferences.boardedAt(for: selectedDirection) != nil)
+    }
+
+    private var autoExplanation: String {
+        areas.authorization == .authorizedAlways || areas.authorization == .authorizedWhenInUse
+            ? "Auto shows the way to work near home, the way home near work, and follows the ride you are on."
+            : "Auto shows the way to work before 12:00 and the way home after. Allow location in Settings to follow where you are."
     }
 
     var body: some View {
@@ -33,7 +43,7 @@ struct HomeView: View {
                         Text("Your next journey")
                             .font(.largeTitle.bold())
                             .foregroundStyle(Palette.chalk)
-                        Text("Auto shows the way to work before 12:00 and the way home after.")
+                        Text(autoExplanation)
                             .font(.subheadline)
                             .foregroundStyle(Palette.steel)
                     }
@@ -122,6 +132,9 @@ struct HomeView: View {
             }
             .onChange(of: usualToWork) { _, _ in reloadWidget() }
             .onChange(of: usualToHome) { _, _ in reloadWidget() }
+            // Area events arrive while the app is open too; the monitor already reloads the widget.
+            .onChange(of: lastArea) { _, _ in Task { await refreshJourney() } }
+            .onChange(of: boardedAt) { _, _ in Task { await refreshJourney() } }
             .onChange(of: serviceURL) { _, _ in
                 connectionState = .notChecked
                 journeyMessage = nil
@@ -156,6 +169,8 @@ struct HomeView: View {
             work: $work,
             usualToWork: $usualToWork,
             usualToHome: $usualToHome,
+            lastArea: lastArea,
+            boardedAt: boardedAt,
             serviceURL: $serviceURL,
             connectionState: connectionState,
             isCheckingConnection: isCheckingConnection,
@@ -189,13 +204,15 @@ struct HomeView: View {
         let requestedDirection = selectedDirection
         let requestedURL = serviceURL
         let requestedDeparture = JourneyPreferences.usualDeparture(for: requestedDirection)
+        let requestedBoardedAt = JourneyPreferences.boardedAt(for: requestedDirection)
         isRefreshingJourney = true
         connectionState = .checking
         journeyMessage = nil
         defer {
             isRefreshingJourney = false
             if serviceURL != requestedURL || selectedDirection != requestedDirection ||
-                JourneyPreferences.usualDeparture(for: requestedDirection) != requestedDeparture {
+                JourneyPreferences.usualDeparture(for: requestedDirection) != requestedDeparture ||
+                JourneyPreferences.boardedAt(for: requestedDirection) != requestedBoardedAt {
                 Task { await refreshJourney() }
             }
         }
@@ -204,11 +221,13 @@ struct HomeView: View {
             let snapshot = try await JourneyService().fetchJourney(
                 at: requestedURL,
                 direction: requestedDirection,
-                usualDeparture: requestedDeparture
+                usualDeparture: requestedDeparture,
+                boardedAt: requestedBoardedAt
             )
             guard serviceURL == requestedURL,
                   selectedDirection == requestedDirection,
-                  JourneyPreferences.usualDeparture(for: requestedDirection) == requestedDeparture else { return }
+                  JourneyPreferences.usualDeparture(for: requestedDirection) == requestedDeparture,
+                  JourneyPreferences.boardedAt(for: requestedDirection) == requestedBoardedAt else { return }
             snapshots[requestedDirection] = snapshot
             JourneyPreferences.cache(snapshot)
             connectionState = .connected
@@ -256,7 +275,10 @@ private struct JourneySettingsView: View {
     @Binding var work: String
     @Binding var usualToWork: String
     @Binding var usualToHome: String
+    let lastArea: String
+    let boardedAt: Double
     @Binding var serviceURL: String
+    @ObservedObject var areas = AreaMonitor.shared
     let connectionState: ConnectionState
     let isCheckingConnection: Bool
     let isRefreshingJourney: Bool
@@ -289,6 +311,22 @@ private struct JourneySettingsView: View {
             }
 
             Section {
+                LabeledContent("Location", value: locationStatus)
+                if areas.authorization == .authorizedAlways || areas.authorization == .authorizedWhenInUse {
+                    LabeledContent("Now", value: areaStatus)
+                }
+                if areas.authorization == .notDetermined {
+                    Button("Use location") { areas.requestAccess() }
+                } else if areas.authorization != .authorizedAlways {
+                    Link("Open Settings", destination: URL(string: UIApplication.openSettingsURLString)!)
+                }
+            } header: {
+                Text("Auto direction")
+            } footer: {
+                Text("Auto shows the way to work near home and the way home near work, and follows the train or bus you take. Always lets this work while NextLeg is closed. NextLeg only checks whether you are near home or work. It keeps no history and never sends your location to the Pi.")
+            }
+
+            Section {
                 TextField("http://nextleg.local:8080", text: $serviceURL)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
@@ -313,6 +351,21 @@ private struct JourneySettingsView: View {
             }
         }
         .navigationTitle("Settings")
+    }
+
+    private var locationStatus: String {
+        switch areas.authorization {
+        case .authorizedAlways: "Always"
+        case .authorizedWhenInUse: "Only while open"
+        case .denied, .restricted: "Off"
+        default: "Not set up"
+        }
+    }
+
+    private var areaStatus: String {
+        guard let area = Area(rawValue: lastArea) else { return "Not known yet" }
+        guard boardedAt > 0 else { return "Near \(area.rawValue)" }
+        return "Left \(area.rawValue) at \(Date(timeIntervalSince1970: boardedAt).formatted(date: .omitted, time: .shortened))"
     }
 }
 

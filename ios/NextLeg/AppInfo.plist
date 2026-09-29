@@ -9,5 +9,9 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>NextLeg connects to your configured journey service on your local network.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>NextLeg checks whether you are near home or near work to show the right direction. It keeps no location history and never sends your location anywhere.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>With Always, NextLeg notices when you leave home or work, even while closed, so the widget follows the train or bus you are on. It only stores which area you left and when, on this phone.</string>
 </dict>
 </plist>

@@ -5,21 +5,29 @@ enum JourneyDirection: String, Codable, CaseIterable {
     case toBlerick = "to_blerick"
 }
 
-/// Which direction the app and widget show. Auto shows the way to work before noon and the way home after.
+/// The places area monitoring watches. Near home the way to work matters, near work the way home.
+enum Area: String, CaseIterable {
+    case home, work
+
+    var direction: JourneyDirection { self == .home ? .toVeghel : .toBlerick }
+}
+
+/// Which direction the app and widget show. Auto follows the area the phone is in or last left.
+/// Without area events it shows the way to work before noon and the way home after.
 enum DirectionMode: String {
     case auto, toWork, toHome
 
-    func direction(at date: Date) -> JourneyDirection {
+    func direction(at date: Date, lastArea: Area?) -> JourneyDirection {
         switch self {
         case .toWork: .toVeghel
         case .toHome: .toBlerick
-        case .auto: Calendar.current.component(.hour, from: date) < 12 ? .toVeghel : .toBlerick
+        case .auto: lastArea?.direction ?? (Calendar.current.component(.hour, from: date) < 12 ? .toVeghel : .toBlerick)
         }
     }
 
-    /// When auto mode switches next, at noon or midnight. Nil for a fixed direction.
-    func nextChange(after date: Date) -> Date? {
-        guard self == .auto else { return nil }
+    /// When auto mode switches by the clock next, at noon or midnight. Nil when the direction does not follow the clock.
+    func nextChange(after date: Date, lastArea: Area?) -> Date? {
+        guard self == .auto, lastArea == nil else { return nil }
         let calendar = Calendar.current
         let noon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: date)!
         return date < noon ? noon : calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
@@ -58,6 +66,8 @@ struct JourneyLeg: Codable {
     let delaySeconds: Int?
     let platform: String?
     let sourceUpdatedAt: Date?
+    let scheduledArrival: Date?
+    let expectedArrival: Date?
 
     init(
         mode: Mode,
@@ -68,7 +78,9 @@ struct JourneyLeg: Codable {
         status: JourneyLegStatus,
         delaySeconds: Int? = nil,
         platform: String? = nil,
-        sourceUpdatedAt: Date? = nil
+        sourceUpdatedAt: Date? = nil,
+        scheduledArrival: Date? = nil,
+        expectedArrival: Date? = nil
     ) {
         self.mode = mode
         self.origin = origin
@@ -79,9 +91,13 @@ struct JourneyLeg: Codable {
         self.delaySeconds = delaySeconds
         self.platform = platform
         self.sourceUpdatedAt = sourceUpdatedAt
+        self.scheduledArrival = scheduledArrival
+        self.expectedArrival = expectedArrival
     }
 
     var delayMinutes: Int? { delaySeconds.map { Int((Double($0) / 60).rounded()) } }
+    var departureTime: Date { expectedDeparture ?? scheduledDeparture }
+    var arrivalTime: Date? { expectedArrival ?? scheduledArrival }
 }
 
 struct JourneySnapshot: Codable {
@@ -167,12 +183,18 @@ enum JourneyJSON {
 }
 
 struct Trip {
+    /// Waiting for the shown leg to depart, riding it, or arrived after the last leg.
+    enum Phase { case waiting, riding, arrived }
+
     var from: String
     var to: String
     var area: String?
+    var phase: Phase
     var nextLeg: Mode?
     var followingLeg: Mode?
+    /// The shown time as scheduled: the departure while waiting, the arrival while riding.
     var departure: String?
+    /// When the shown time happens: the countdown target. Nil when there is nothing to count down to.
     var departureDate: Date?
     var expected: String?
     var delayMinutes: Int?
@@ -186,35 +208,48 @@ struct Trip {
     /// Short problem of the second leg, like "+7 MIN". Nil when it runs as planned.
     var followingStatus: String?
 
-    init(snapshot: JourneySnapshot, home: String, work: String) {
+    /// While `tracking` the ride the phone is on, the trip shows the part of it that matters at `date`.
+    init(snapshot: JourneySnapshot, home: String, work: String, at date: Date = .now, tracking: Bool = false) {
         let goesHome = snapshot.direction == .toBlerick
-        let firstLeg = snapshot.legs.first
-        let secondLeg = snapshot.legs.dropFirst().first
+        let (index, phase) = tracking ? Self.progress(through: snapshot.legs, at: date) : (0, .waiting)
+        let leg = snapshot.legs.indices.contains(index) ? snapshot.legs[index] : nil
+        let onBoard = phase != .waiting
+        let following = phase == .arrived ? nil : snapshot.legs.dropFirst(index + 1).first
 
         from = goesHome ? work : home
         to = goesHome ? home : work
-        area = nil
-        nextLeg = firstLeg?.mode
-        followingLeg = secondLeg?.mode
-        departure = firstLeg.map { Self.time($0.scheduledDeparture) }
-        if let firstLeg, firstLeg.status != .cancelled, firstLeg.status != .skipped {
-            departureDate = firstLeg.expectedDeparture ?? firstLeg.scheduledDeparture
+        switch phase {
+        case .riding: area = leg.map { "Arrives \($0.destination)" }
+        case .arrived: area = "Arrived"
+        case .waiting: area = index > 0 ? leg.map { "From \($0.origin)" } : nil
         }
-        if let expectedDeparture = firstLeg?.expectedDeparture {
-            expected = Self.time(expectedDeparture)
-        } else {
-            expected = nil
+        self.phase = phase
+        nextLeg = leg?.mode
+        followingLeg = following?.mode
+        departure = (onBoard ? leg?.scheduledArrival : leg?.scheduledDeparture).map(Self.time)
+        expected = (onBoard ? leg?.expectedArrival : leg?.expectedDeparture).map(Self.time)
+        if let leg, leg.status != .cancelled, leg.status != .skipped, phase != .arrived {
+            departureDate = onBoard ? leg.arrivalTime : leg.departureTime
         }
-        delayMinutes = firstLeg?.delayMinutes
-        platform = firstLeg?.platform
+        if onBoard, let scheduledArrival = leg?.scheduledArrival, let expectedArrival = leg?.expectedArrival {
+            delayMinutes = Int((expectedArrival.timeIntervalSince(scheduledArrival) / 60).rounded())
+        } else if !onBoard {
+            delayMinutes = leg?.delayMinutes
+        }
+        platform = onBoard ? nil : leg?.platform
         updated = Self.time(snapshot.fetchedAt)
         fetchedAt = snapshot.fetchedAt
-        legStatus = firstLeg?.status ?? .unknown
+        if onBoard, let leg {
+            // On board, the arrival counts: a late departure that made up time shows as on time.
+            legStatus = (delayMinutes ?? 0) >= 1 ? .delayed : leg.status == .delayed ? .onTime : leg.status
+        } else {
+            legStatus = leg?.status ?? .unknown
+        }
         freshness = snapshot.freshness == .fresh && Date.now.timeIntervalSince(snapshot.fetchedAt) > 20 * 60
             ? .stale : snapshot.freshness
         worstLeg = snapshot.legs.max { Self.attention($0) < Self.attention($1) }
-        switch secondLeg?.status {
-        case .delayed: followingStatus = "+\(secondLeg?.delayMinutes ?? 0) MIN"
+        switch following?.status {
+        case .delayed: followingStatus = "+\(following?.delayMinutes ?? 0) MIN"
         case .cancelled: followingStatus = "CANCELLED"
         case .skipped: followingStatus = "SKIPPED"
         default: followingStatus = nil
@@ -227,6 +262,28 @@ struct Trip {
         case .delayed: 1_000 + (leg.delaySeconds ?? 0)
         case .onTime: 1
         case .scheduled, .unknown: 0
+        }
+    }
+
+    /// Which leg the ride is at, and whether the phone waits for it, rides it, or has arrived.
+    /// A leg without an arrival time counts as ridden until the next leg departs.
+    private static func progress(through legs: [JourneyLeg], at date: Date) -> (Int, Phase) {
+        guard !legs.isEmpty else { return (0, .waiting) }
+        for (index, leg) in legs.enumerated() {
+            if date < leg.departureTime { return (index, .waiting) }
+            guard let arrival = leg.arrivalTime ?? legs.dropFirst(index + 1).first?.departureTime, date >= arrival else {
+                return (index, .riding)
+            }
+        }
+        return (legs.count - 1, .arrived)
+    }
+
+    /// "On train" while riding, "Arrived" at the end, nil while waiting for a departure.
+    var phaseTitle: String? {
+        switch phase {
+        case .waiting: nil
+        case .riding: nextLeg.map { "On \($0.name.lowercased())" }
+        case .arrived: "Arrived"
         }
     }
 
@@ -301,6 +358,8 @@ enum JourneyPreferences {
     static let workKey = "work"
     static let directionModeKey = "directionMode"
     static let serviceURLKey = "serviceURL"
+    static let lastAreaKey = "lastArea"
+    static let boardedAtKey = "boardedAt"
     static let defaultHome = "Blerick"
     static let defaultWork = "Corridor, Veghel"
     static let defaults = UserDefaults(suiteName: appGroupIdentifier)!
@@ -339,17 +398,35 @@ enum JourneyPreferences {
         DirectionMode(rawValue: defaults.string(forKey: directionModeKey) ?? "") ?? .auto
     }
 
-    static var selectedDirection: JourneyDirection {
-        directionMode.direction(at: .now)
+    /// The area the phone is in or last left, from area monitoring. Nil before the first area event.
+    static var lastArea: Area? {
+        Area(rawValue: defaults.string(forKey: lastAreaKey) ?? "")
     }
 
-    static var savedTrip: Trip {
+    /// When the phone left the area this direction starts from, if that was less than three hours ago.
+    /// Stored as seconds since 1970, so the app can watch it with @AppStorage.
+    static func boardedAt(for direction: JourneyDirection) -> Date? {
+        let seconds = defaults.double(forKey: boardedAtKey)
+        guard seconds > 0, lastArea?.direction == direction else { return nil }
+        let date = Date(timeIntervalSince1970: seconds)
+        return Date.now.timeIntervalSince(date) < 3 * 60 * 60 ? date : nil
+    }
+
+    static var selectedDirection: JourneyDirection {
+        directionMode.direction(at: .now, lastArea: lastArea)
+    }
+
+    static var savedTrip: Trip { trip(at: .now) }
+
+    static func trip(at date: Date) -> Trip {
         let direction = selectedDirection
         let snapshot = cachedSnapshot(for: direction) ?? .sample(direction: direction)
         return Trip(
             snapshot: snapshot,
             home: defaults.string(forKey: homeKey) ?? defaultHome,
-            work: defaults.string(forKey: workKey) ?? defaultWork
+            work: defaults.string(forKey: workKey) ?? defaultWork,
+            at: date,
+            tracking: boardedAt(for: direction) != nil
         )
     }
 }

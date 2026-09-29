@@ -24,17 +24,19 @@ struct NextLegProvider: TimelineProvider {
             if trip.freshness == .fresh {
                 reloadDate = min(reloadDate, trip.fetchedAt.addingTimeInterval(20 * 60))
             }
-            if let directionChange = JourneyPreferences.directionMode.nextChange(after: .now) {
+            if let directionChange = JourneyPreferences.directionMode.nextChange(after: .now, lastArea: JourneyPreferences.lastArea) {
                 reloadDate = min(reloadDate, directionChange)
             }
             // One entry per whole minute before departure keeps the countdown current until the next
             // reload. The last one lands on the departure itself, then the widget asks for the next leg.
+            // While tracking a ride, each entry shows the part of the ride at its own time.
             if let departure = trip.departureDate, departure > .now {
                 reloadDate = min(reloadDate, departure.addingTimeInterval(60))
                 let firstMinute = Int(departure.timeIntervalSinceNow / 60)
                 let lastMinute = max(0, Int((departure.timeIntervalSince(reloadDate) / 60).rounded(.up)))
                 for minute in stride(from: firstMinute, through: lastMinute, by: -1) {
-                    entries.append(NextLegEntry(date: departure.addingTimeInterval(Double(-minute * 60)), trip: trip))
+                    let date = departure.addingTimeInterval(Double(-minute * 60))
+                    entries.append(NextLegEntry(date: date, trip: JourneyPreferences.trip(at: date)))
                 }
             }
             completion(Timeline(entries: entries, policy: .after(reloadDate)))
@@ -49,7 +51,8 @@ struct NextLegProvider: TimelineProvider {
             JourneyPreferences.cache(try await JourneyService().fetchJourney(
                 at: serviceURL,
                 direction: direction,
-                usualDeparture: JourneyPreferences.usualDeparture(for: direction)
+                usualDeparture: JourneyPreferences.usualDeparture(for: direction),
+                boardedAt: JourneyPreferences.boardedAt(for: direction)
             ))
         } catch {
             guard let cached = JourneyPreferences.cachedSnapshot(for: direction), cached.freshness != .sample else { return }

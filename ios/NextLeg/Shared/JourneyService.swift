@@ -8,10 +8,14 @@ struct JourneyService {
         }
     }
 
-    func fetchJourney(at serviceURL: String, direction: JourneyDirection, usualDeparture: String?) async throws -> JourneySnapshot {
+    func fetchJourney(at serviceURL: String, direction: JourneyDirection, usualDeparture: String?,
+                      boardedAt: Date?) async throws -> JourneySnapshot {
         var query = [URLQueryItem(name: "direction", value: direction.rawValue)]
         if let usualDeparture {
             query.append(URLQueryItem(name: "departure", value: usualDeparture))
+        }
+        if let boardedAt {
+            query.append(URLQueryItem(name: "boardedAt", value: ISO8601DateFormatter().string(from: boardedAt)))
         }
         let data = try await get(serviceURL: serviceURL, path: "/api/v1/journey", query: query)
         let snapshot: JourneySnapshot
