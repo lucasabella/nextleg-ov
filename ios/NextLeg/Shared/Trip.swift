@@ -5,6 +5,27 @@ enum JourneyDirection: String, Codable, CaseIterable {
     case toBlerick = "to_blerick"
 }
 
+/// Which direction the app and widget show. Auto shows the way to work before noon and the way home after.
+enum DirectionMode: String {
+    case auto, toWork, toHome
+
+    func direction(at date: Date) -> JourneyDirection {
+        switch self {
+        case .toWork: .toVeghel
+        case .toHome: .toBlerick
+        case .auto: Calendar.current.component(.hour, from: date) < 12 ? .toVeghel : .toBlerick
+        }
+    }
+
+    /// When auto mode switches next, at noon or midnight. Nil for a fixed direction.
+    func nextChange(after date: Date) -> Date? {
+        guard self == .auto else { return nil }
+        let calendar = Calendar.current
+        let noon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: date)!
+        return date < noon ? noon : calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
+    }
+}
+
 enum JourneyFreshness: String, Codable {
     case fresh
     case stale
@@ -253,7 +274,7 @@ enum JourneyPreferences {
     static let widgetKind = "NextLegWidget"
     static let homeKey = "home"
     static let workKey = "work"
-    static let showsTripHomeKey = "showsTripHome"
+    static let directionModeKey = "directionMode"
     static let serviceURLKey = "serviceURL"
     static let defaultHome = "Blerick"
     static let defaultWork = "Corridor, Veghel"
@@ -289,8 +310,12 @@ enum JourneyPreferences {
         defaults.set(data, forKey: snapshotKey(for: snapshot.direction))
     }
 
+    static var directionMode: DirectionMode {
+        DirectionMode(rawValue: defaults.string(forKey: directionModeKey) ?? "") ?? .auto
+    }
+
     static var selectedDirection: JourneyDirection {
-        defaults.bool(forKey: showsTripHomeKey) ? .toBlerick : .toVeghel
+        directionMode.direction(at: .now)
     }
 
     static var savedTrip: Trip {

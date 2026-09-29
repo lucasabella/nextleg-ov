@@ -4,7 +4,7 @@ import WidgetKit
 struct HomeView: View {
     @AppStorage(JourneyPreferences.homeKey, store: JourneyPreferences.defaults) private var home = JourneyPreferences.defaultHome
     @AppStorage(JourneyPreferences.workKey, store: JourneyPreferences.defaults) private var work = JourneyPreferences.defaultWork
-    @AppStorage(JourneyPreferences.showsTripHomeKey, store: JourneyPreferences.defaults) private var showsTripHome = false
+    @AppStorage(JourneyPreferences.directionModeKey, store: JourneyPreferences.defaults) private var directionMode = DirectionMode.auto
     @AppStorage(JourneyPreferences.serviceURLKey, store: JourneyPreferences.defaults) private var serviceURL = ""
     @AppStorage(JourneyPreferences.usualDepartureKey(for: .toVeghel), store: JourneyPreferences.defaults) private var usualToWork = ""
     @AppStorage(JourneyPreferences.usualDepartureKey(for: .toBlerick), store: JourneyPreferences.defaults) private var usualToHome = ""
@@ -14,9 +14,10 @@ struct HomeView: View {
     @State private var isCheckingConnection = false
     @State private var isRefreshingJourney = false
     @State private var journeyMessage: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     private var selectedDirection: JourneyDirection {
-        showsTripHome ? .toBlerick : .toVeghel
+        directionMode.direction(at: .now)
     }
 
     private var previewTrip: Trip {
@@ -32,14 +33,15 @@ struct HomeView: View {
                         Text("Your next journey")
                             .font(.largeTitle.bold())
                             .foregroundStyle(Palette.chalk)
-                        Text("Choose the direction shown in your widget.")
+                        Text("Auto shows the way to work before 12:00 and the way home after.")
                             .font(.subheadline)
                             .foregroundStyle(Palette.steel)
                     }
 
-                    Picker("Direction", selection: $showsTripHome.animation()) {
-                        Text("To work").tag(false)
-                        Text("To home").tag(true)
+                    Picker("Direction", selection: $directionMode.animation()) {
+                        Text("Auto").tag(DirectionMode.auto)
+                        Text("To work").tag(DirectionMode.toWork)
+                        Text("To home").tag(DirectionMode.toHome)
                     }
                     .pickerStyle(.segmented)
 
@@ -96,6 +98,8 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Color(hex: 0x15191F))
+            // Also runs when coming back from Settings, so a changed usual departure shows right away.
+            .onAppear { Task { await refreshJourney() } }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
@@ -109,7 +113,13 @@ struct HomeView: View {
             .toolbarTitleDisplayMode(.inline)
             .onChange(of: home) { _, _ in reloadWidget() }
             .onChange(of: work) { _, _ in reloadWidget() }
-            .onChange(of: showsTripHome) { _, _ in reloadWidget() }
+            .onChange(of: directionMode) { _, _ in
+                reloadWidget()
+                Task { await refreshJourney() }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await refreshJourney() } }
+            }
             .onChange(of: usualToWork) { _, _ in reloadWidget() }
             .onChange(of: usualToHome) { _, _ in reloadWidget() }
             .onChange(of: serviceURL) { _, _ in
@@ -165,6 +175,7 @@ struct HomeView: View {
     }
 
     private func refreshJourney() async {
+        guard !isRefreshingJourney, !serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isRefreshingJourney = true
         connectionState = .checking
         journeyMessage = nil

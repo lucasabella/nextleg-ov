@@ -21,6 +21,9 @@ struct NextLegProvider: TimelineProvider {
             let trip = JourneyPreferences.savedTrip
             var entries = [NextLegEntry(date: .now, trip: trip)]
             var reloadDate = Date.now.addingTimeInterval(15 * 60)
+            if let directionChange = JourneyPreferences.directionMode.nextChange(after: .now) {
+                reloadDate = min(reloadDate, directionChange)
+            }
             // One entry per whole minute before departure keeps the countdown current until the next
             // reload. The last one lands on the departure itself, then the widget asks for the next leg.
             if let departure = trip.departureDate, departure > .now {
