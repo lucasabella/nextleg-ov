@@ -2,6 +2,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -75,9 +76,10 @@ public final class NextLegServer {
         URI feedUri = URI.create(System.getenv().getOrDefault("NEXTLEG_GTFS_URL", DEFAULT_FEED_URI.toString()));
         ScheduleRepository schedules = new ScheduleRepository(dataDirectory, archive, feedUri, archiveOverride != null);
         schedules.loadCache();
+        RealtimeFeeds realtime = new RealtimeFeeds();
 
         HttpServer server = HttpServer.create(new InetSocketAddress(host, port), 0);
-        server.createContext("/", exchange -> handle(exchange, schedules, transferBufferMinutes, maxTransferWaitMinutes));
+        server.createContext("/", exchange -> handle(exchange, schedules, realtime, transferBufferMinutes, maxTransferWaitMinutes));
         server.start();
 
         ScheduledExecutorService refresh = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -91,7 +93,7 @@ public final class NextLegServer {
                 + " to " + maxTransferWaitMinutes + " minutes).");
     }
 
-    private static void handle(HttpExchange exchange, ScheduleRepository schedules,
+    private static void handle(HttpExchange exchange, ScheduleRepository schedules, RealtimeFeeds realtime,
                                int transferBufferMinutes, int maxTransferWaitMinutes) throws IOException {
         String path = exchange.getRequestURI().getPath();
         if (path.equals("/health")) {
@@ -135,27 +137,28 @@ public final class NextLegServer {
             return;
         }
         Instant now = Instant.now();
+        Map<String, TripUpdate> updates = realtime.current(state.data().tripIds(), now);
         JourneyChoice choice = usualDeparture == null
-                ? findNextJourney(state.data(), direction, now, transferBufferMinutes, maxTransferWaitMinutes)
-                : findUsualJourney(state.data(), direction, usualDeparture, now, transferBufferMinutes, maxTransferWaitMinutes);
-        send(exchange, 200, journeyJson(direction, choice, state));
+                ? findNextJourney(state.data(), updates, direction, now, transferBufferMinutes, maxTransferWaitMinutes)
+                : findUsualJourney(state.data(), updates, direction, usualDeparture, now, transferBufferMinutes, maxTransferWaitMinutes);
+        send(exchange, 200, journeyJson(direction, choice, state, now));
     }
 
     /** The first journey leaving at or after the usual time. Once today's has left, it looks at the next days. */
-    private static JourneyChoice findUsualJourney(ScheduleData data, String direction, LocalTime usualDeparture,
-                                                  Instant now, int bufferMinutes, int maxWaitMinutes) {
+    private static JourneyChoice findUsualJourney(ScheduleData data, Map<String, TripUpdate> updates, String direction,
+                                                  LocalTime usualDeparture, Instant now, int bufferMinutes, int maxWaitMinutes) {
         LocalDate today = now.atZone(ZONE).toLocalDate();
         for (int day = 0; day < 7; day++) {
             Instant usual = today.plusDays(day).atTime(usualDeparture).atZone(ZONE).toInstant();
-            JourneyChoice choice = findNextJourney(data, direction, usual, bufferMinutes, maxWaitMinutes);
+            JourneyChoice choice = findNextJourney(data, updates, direction, usual, bufferMinutes, maxWaitMinutes);
             if (choice != null && choice.first().departure().isAfter(now)) return choice;
         }
         return null;
     }
 
-    private static JourneyChoice findNextJourney(ScheduleData data, String direction, Instant earliest,
-                                                 int bufferMinutes, int maxWaitMinutes) {
-        Map<PathKey, List<LegInstance>> instances = data.instances(earliest.atZone(ZONE).toLocalDate());
+    private static JourneyChoice findNextJourney(ScheduleData data, Map<String, TripUpdate> updates, String direction,
+                                                 Instant earliest, int bufferMinutes, int maxWaitMinutes) {
+        Map<PathKey, List<LegInstance>> instances = withRealtime(data.instances(earliest.atZone(ZONE).toLocalDate()), updates);
         if (direction.equals("to_veghel")) {
             return choose(instances.get(PathKey.TO_VEGHEL_TRAIN), instances.get(PathKey.TO_VEGHEL_BUS),
                     earliest, bufferMinutes, maxWaitMinutes);
@@ -165,6 +168,36 @@ public final class NextLegServer {
         JourneyChoice viaEindhoven = choose(instances.get(PathKey.TO_BLERICK_BUS_305),
                 instances.get(PathKey.TO_BLERICK_TRAIN_EINDHOVEN), earliest, bufferMinutes, maxWaitMinutes);
         return earlier(viaDenBosch, viaEindhoven);
+    }
+
+    /**
+     * Moves each leg to its expected times when the realtime feed has them, so the journey search uses them too.
+     * Cancelled trips and skipped stops are dropped. Legs without realtime keep their scheduled times.
+     */
+    private static Map<PathKey, List<LegInstance>> withRealtime(Map<PathKey, List<LegInstance>> instances,
+                                                                Map<String, TripUpdate> updates) {
+        Map<PathKey, List<LegInstance>> result = new EnumMap<>(PathKey.class);
+        for (var entry : instances.entrySet()) {
+            PathSpec spec = pathSpec(entry.getKey());
+            List<LegInstance> legs = new ArrayList<>();
+            for (LegInstance leg : entry.getValue()) {
+                TripUpdate update = updates.get(leg.tripId() + "|" + GTFS_DATE.format(leg.serviceDate()));
+                StopUpdate from = update == null ? null : update.stops().get(spec.fromStop());
+                StopUpdate to = update == null ? null : update.stops().get(spec.toStop());
+                if (update != null && (update.cancelled() || from != null && from.skipped() || to != null && to.skipped())) continue;
+                if (from == null || from.departureDelay() == null) {
+                    legs.add(leg);
+                    continue;
+                }
+                int delay = from.departureDelay();
+                int arrivalDelay = to == null || to.arrivalDelay() == null ? delay : to.arrivalDelay();
+                legs.add(new LegInstance(leg.path(), leg.tripId(), leg.serviceDate(), leg.scheduledDeparture(),
+                        leg.scheduledDeparture().plusSeconds(delay), leg.arrival().plusSeconds(arrivalDelay),
+                        new Live(delay, from.platform(), update.updatedAt())));
+            }
+            result.put(entry.getKey(), legs);
+        }
+        return result;
     }
 
     private static JourneyChoice choose(List<LegInstance> firstLegs, List<LegInstance> secondLegs,
@@ -195,25 +228,33 @@ public final class NextLegServer {
         return departure != 0 ? departure : first.second().departure().compareTo(second.second().departure());
     }
 
-    private static String journeyJson(String direction, JourneyChoice choice, FeedState state) {
-        if (choice == null) {
-            return "{\"direction\":\"" + direction + "\",\"fetchedAt\":\"" + ISO_INSTANT.format(state.fetchedAt())
-                    + "\",\"freshness\":\"" + (state.stale() ? "stale" : "fresh") + "\",\"legs\":[]}";
-        }
+    private static String journeyJson(String direction, JourneyChoice choice, FeedState state, Instant now) {
+        String start = "{\"direction\":\"" + direction + "\",\"fetchedAt\":\"" + ISO_INSTANT.format(now)
+                + "\",\"freshness\":\"" + (state.stale() ? "stale" : "fresh") + "\",\"legs\":[";
+        if (choice == null) return start + "]}";
         ScheduleData data = state.data();
         PathSpec firstSpec = pathSpec(choice.first().path());
         PathSpec secondSpec = pathSpec(choice.second().path());
-        return "{\"direction\":\"" + direction + "\",\"fetchedAt\":\"" + ISO_INSTANT.format(state.fetchedAt())
-                + "\",\"freshness\":\"" + (state.stale() ? "stale" : "fresh") + "\",\"legs\":["
-                + legJson(firstSpec, choice.first(), data) + "," + legJson(secondSpec, choice.second(), data) + "]}";
+        return start + legJson(firstSpec, choice.first(), data) + "," + legJson(secondSpec, choice.second(), data) + "]}";
     }
 
     private static String legJson(PathSpec spec, LegInstance instance, ScheduleData data) {
         String origin = data.stopNames().getOrDefault(spec.fromStop(), spec.fromStop());
         String destination = data.stopNames().getOrDefault(spec.toStop(), spec.toStop());
-        return "{\"mode\":\"" + spec.mode() + "\",\"origin\":\"" + jsonEscape(origin)
+        StringBuilder json = new StringBuilder("{\"mode\":\"" + spec.mode() + "\",\"origin\":\"" + jsonEscape(origin)
                 + "\",\"destination\":\"" + jsonEscape(destination) + "\",\"scheduledDeparture\":\""
-                + ISO_INSTANT.format(instance.departure()) + "\",\"status\":\"scheduled\"}";
+                + ISO_INSTANT.format(instance.scheduledDeparture()) + "\"");
+        Live live = instance.live();
+        if (live == null) return json.append(",\"status\":\"scheduled\"}").toString();
+        // Differences under a minute count as on time, like departure boards do.
+        if (Math.abs(live.delaySeconds()) >= 60) {
+            json.append(",\"expectedDeparture\":\"").append(ISO_INSTANT.format(instance.departure()))
+                    .append("\",\"delaySeconds\":").append(live.delaySeconds());
+        }
+        json.append(",\"status\":\"").append(live.delaySeconds() >= 60 ? "delayed" : "on_time").append('"');
+        if (live.platform() != null) json.append(",\"platform\":\"").append(jsonEscape(live.platform())).append('"');
+        if (live.updatedAt() != null) json.append(",\"sourceUpdatedAt\":\"").append(ISO_INSTANT.format(live.updatedAt())).append('"');
+        return json.append('}').toString();
     }
 
     private static PathSpec pathSpec(PathKey key) {
@@ -305,7 +346,12 @@ public final class NextLegServer {
     private record TripMeta(String routePattern, String serviceId) {}
     private record StopTime(String stopId, int sequence, String arrival, String departure) {}
     private record ScheduledLeg(PathKey path, String serviceId, String tripId, String departure, String arrival) {}
-    private record LegInstance(PathKey path, Instant departure, Instant arrival) {}
+    /** One dated leg. Departure and arrival are the expected times when realtime data is known, else scheduled. */
+    private record LegInstance(PathKey path, String tripId, LocalDate serviceDate, Instant scheduledDeparture,
+                               Instant departure, Instant arrival, Live live) {}
+    private record Live(int delaySeconds, String platform, Instant updatedAt) {}
+    private record StopUpdate(Integer arrivalDelay, Integer departureDelay, boolean skipped, String platform) {}
+    private record TripUpdate(boolean cancelled, Map<String, StopUpdate> stops, Instant updatedAt) {}
     private record JourneyChoice(LegInstance first, LegInstance second) {}
     private record FeedState(ScheduleData data, Instant fetchedAt, boolean stale) {}
 
@@ -313,6 +359,7 @@ public final class NextLegServer {
         private final Map<PathKey, List<ScheduledLeg>> legs;
         private final Map<LocalDate, Set<String>> activeServices;
         private final Map<String, String> stopNames;
+        private final Set<String> tripIds = new HashSet<>();
 
         private ScheduleData(Map<PathKey, List<ScheduledLeg>> legs,
                              Map<LocalDate, Set<String>> activeServices,
@@ -320,9 +367,12 @@ public final class NextLegServer {
             this.legs = legs;
             this.activeServices = activeServices;
             this.stopNames = stopNames;
+            legs.values().forEach(pathLegs -> pathLegs.forEach(leg -> tripIds.add(leg.tripId())));
         }
 
         private Map<String, String> stopNames() { return stopNames; }
+
+        private Set<String> tripIds() { return tripIds; }
 
         private Map<PathKey, List<LegInstance>> instances(LocalDate today) {
             Map<PathKey, List<LegInstance>> result = new EnumMap<>(PathKey.class);
@@ -338,7 +388,8 @@ public final class NextLegServer {
                             Instant departure = serviceInstant(serviceDate, leg.departure());
                             Instant arrival = serviceInstant(serviceDate, leg.arrival());
                             if (!arrival.isBefore(departure)) {
-                                result.get(leg.path()).add(new LegInstance(leg.path(), departure, arrival));
+                                result.get(leg.path()).add(new LegInstance(
+                                        leg.path(), leg.tripId(), serviceDate, departure, departure, arrival, null));
                             }
                         } catch (IllegalArgumentException ignored) {
                         }
@@ -475,10 +526,6 @@ public final class NextLegServer {
             } finally {
                 try { Files.deleteIfExists(temporaryArchive); } catch (IOException ignored) {}
             }
-        }
-
-        private boolean isGzip(HttpResponse<?> response) {
-            return response.headers().firstValue("Content-Encoding").orElse("").toLowerCase().contains("gzip");
         }
 
         private void markRefreshFailed(String reason) {
@@ -795,6 +842,228 @@ public final class NextLegServer {
             if (index == null || index >= fields.size()) throw new IOException("GTFS CSV is missing column " + name + ".");
             return fields.get(index);
         }
+    }
+
+    /** OpenOV realtime trip updates for trains and buses. Fetched when a journey is requested, at most once a minute. */
+    private static final class RealtimeFeeds {
+        private static final List<URI> FEEDS = List.of(
+                URI.create("https://gtfs.openov.nl/gtfs-rt/trainUpdates.pb"),
+                URI.create("https://gtfs.openov.nl/gtfs-rt/tripUpdates.pb"));
+        private static final Duration CHECK_INTERVAL = Duration.ofMinutes(1);
+        private static final Duration MAX_AGE = Duration.ofMinutes(10);
+        private final HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(4))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+        private final Map<URI, String> etags = new HashMap<>();
+        private final Map<URI, Map<String, TripUpdate>> updates = new HashMap<>();
+        private final Map<URI, Instant> loadedAt = new HashMap<>();
+        private Instant checkedAt = Instant.EPOCH;
+
+        /** Updates keyed by trip id and service date, such as "381881923|20260930". Old data is dropped after ten minutes. */
+        private synchronized Map<String, TripUpdate> current(Set<String> tripIds, Instant now) {
+            if (now.isAfter(checkedAt.plus(CHECK_INTERVAL))) {
+                checkedAt = now;
+                for (URI feed : FEEDS) refresh(feed, tripIds, now);
+            }
+            Map<String, TripUpdate> result = new HashMap<>();
+            for (URI feed : FEEDS) {
+                Instant loaded = loadedAt.get(feed);
+                if (loaded != null && now.isBefore(loaded.plus(MAX_AGE))) result.putAll(updates.get(feed));
+            }
+            return result;
+        }
+
+        private void refresh(URI feed, Set<String> tripIds, Instant now) {
+            try {
+                HttpRequest.Builder request = HttpRequest.newBuilder(feed)
+                        .timeout(Duration.ofSeconds(4))
+                        .header("User-Agent", "NextLeg/1.0 (self-hosted Java GTFS-RT client)")
+                        .header("Accept-Encoding", "gzip")
+                        .GET();
+                String etag = etags.get(feed);
+                if (etag != null) request.header("If-None-Match", etag);
+                HttpResponse<byte[]> response = client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
+                if (response.statusCode() == 304) {
+                    loadedAt.put(feed, now);
+                    return;
+                }
+                if (response.statusCode() != 200) throw new IOException("HTTP " + response.statusCode() + ".");
+                byte[] body = response.body();
+                if (isGzip(response)) {
+                    try (InputStream decoded = new GZIPInputStream(new ByteArrayInputStream(body))) { body = decoded.readAllBytes(); }
+                }
+                updates.put(feed, parseTripUpdates(body, tripIds));
+                response.headers().firstValue("ETag").ifPresent(value -> etags.put(feed, value));
+                loadedAt.put(feed, now);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } catch (IOException | RuntimeException exception) {
+                System.err.println("OpenOV realtime " + feed.getPath() + " failed: " + exception.getMessage());
+            }
+        }
+
+        /** Reads a GTFS-RT FeedMessage and keeps only the trips NextLeg uses. */
+        private static Map<String, TripUpdate> parseTripUpdates(byte[] bytes, Set<String> tripIds) {
+            Map<String, TripUpdate> result = new HashMap<>();
+            Instant updatedAt = null;
+            Protobuf feed = new Protobuf(bytes, 0, bytes.length);
+            while (feed.next()) {
+                if (feed.is(1, 2)) {
+                    Protobuf header = feed.message();
+                    while (header.next()) {
+                        if (header.is(3, 0)) updatedAt = Instant.ofEpochSecond(header.varint());
+                        else header.skip();
+                    }
+                } else if (feed.is(2, 2)) {
+                    Protobuf entity = feed.message();
+                    while (entity.next()) {
+                        if (entity.is(3, 2)) readTripUpdate(entity.message(), tripIds, updatedAt, result);
+                        else entity.skip();
+                    }
+                } else {
+                    feed.skip();
+                }
+            }
+            return result;
+        }
+
+        private static void readTripUpdate(Protobuf update, Set<String> tripIds, Instant updatedAt,
+                                           Map<String, TripUpdate> result) {
+            String tripId = null;
+            String startDate = null;
+            boolean cancelled = false;
+            List<Protobuf> stops = new ArrayList<>();
+            while (update.next()) {
+                if (update.is(1, 2)) {
+                    Protobuf trip = update.message();
+                    while (trip.next()) {
+                        if (trip.is(1, 2)) tripId = trip.string();
+                        else if (trip.is(3, 2)) startDate = trip.string();
+                        else if (trip.is(4, 0)) cancelled = trip.varint() == 3;
+                        else trip.skip();
+                    }
+                } else if (update.is(2, 2)) {
+                    stops.add(update.message());
+                } else {
+                    update.skip();
+                }
+            }
+            if (tripId == null || startDate == null || !tripIds.contains(tripId)) return;
+
+            // A stop without its own times inherits the delay of the stop before it, as GTFS-RT defines.
+            Map<String, StopUpdate> stopUpdates = new HashMap<>();
+            Integer carriedDelay = null;
+            for (Protobuf stop : stops) {
+                String stopId = null;
+                Integer arrival = null;
+                Integer departure = null;
+                boolean skipped = false;
+                String platform = null;
+                while (stop.next()) {
+                    if (stop.is(2, 2)) arrival = delay(stop.message());
+                    else if (stop.is(3, 2)) departure = delay(stop.message());
+                    else if (stop.is(4, 2)) stopId = stop.string();
+                    else if (stop.is(5, 0)) skipped = stop.varint() == 1;
+                    else if (stop.is(1003, 2)) platform = platform(stop.message());
+                    else stop.skip();
+                }
+                if (arrival == null) arrival = carriedDelay;
+                if (departure == null) departure = arrival;
+                if (departure != null) carriedDelay = departure;
+                if (stopId != null) stopUpdates.put(stopId, new StopUpdate(arrival, departure, skipped, platform));
+            }
+            result.put(tripId + "|" + startDate, new TripUpdate(cancelled, stopUpdates, updatedAt));
+        }
+
+        private static Integer delay(Protobuf event) {
+            Integer delay = null;
+            while (event.next()) {
+                if (event.is(1, 0)) delay = (int) event.varint();
+                else event.skip();
+            }
+            return delay;
+        }
+
+        /** OVapi extension on a stop: field 2 is the actual track, field 1 the planned one. */
+        private static String platform(Protobuf extension) {
+            String planned = null;
+            String actual = null;
+            while (extension.next()) {
+                if (extension.is(1, 2)) planned = extension.string();
+                else if (extension.is(2, 2)) actual = extension.string();
+                else extension.skip();
+            }
+            return actual != null && !actual.isBlank() ? actual : planned;
+        }
+    }
+
+    /** Just enough protobuf decoding for GTFS-RT. Fields NextLeg does not use are skipped. */
+    private static final class Protobuf {
+        private final byte[] bytes;
+        private final int end;
+        private int position;
+        private int field;
+        private int wireType;
+
+        private Protobuf(byte[] bytes, int start, int end) {
+            this.bytes = bytes;
+            this.position = start;
+            this.end = end;
+        }
+
+        private boolean next() {
+            if (position >= end) return false;
+            long key = varint();
+            field = (int) (key >>> 3);
+            wireType = (int) (key & 7);
+            return true;
+        }
+
+        private boolean is(int field, int wireType) {
+            return this.field == field && this.wireType == wireType;
+        }
+
+        private long varint() {
+            long result = 0;
+            for (int shift = 0; shift < 64; shift += 7) {
+                byte next = bytes[position++];
+                result |= (long) (next & 0x7f) << shift;
+                if (next >= 0) return result;
+            }
+            throw new IllegalArgumentException("Invalid protobuf varint.");
+        }
+
+        private Protobuf message() {
+            int length = (int) varint();
+            Protobuf message = new Protobuf(bytes, position, position + length);
+            position += length;
+            return message;
+        }
+
+        private String string() {
+            int length = (int) varint();
+            String value = new String(bytes, position, length, StandardCharsets.UTF_8);
+            position += length;
+            return value;
+        }
+
+        private void skip() {
+            switch (wireType) {
+                case 0 -> varint();
+                case 1 -> position += 8;
+                case 2 -> {
+                    int length = (int) varint();
+                    position += length;
+                }
+                case 5 -> position += 4;
+                default -> throw new IllegalArgumentException("Unsupported protobuf wire type " + wireType + ".");
+            }
+        }
+    }
+
+    private static boolean isGzip(HttpResponse<?> response) {
+        return response.headers().firstValue("Content-Encoding").orElse("").toLowerCase().contains("gzip");
     }
 
     private static Instant parseInstant(String value) {

@@ -1,6 +1,6 @@
 # Raspberry Pi service
 
-The Java service reads OpenOV's static GTFS timetable and serves the next connected train and bus departures for the Blerick ↔ Corridor commute. This version returns scheduled times only. It does not yet include live delay or cancellation updates.
+The Java service reads OpenOV's static GTFS timetable and serves the next connected train and bus departures for the Blerick ↔ Corridor commute. It adds live delays, cancellations, and train platforms from OpenOV's realtime feeds when they have data for a trip.
 
 The feed has no transfer walking times. The service uses a 10-minute minimum connection buffer and a 60-minute maximum as search heuristics. They do not confirm that a transfer is walkable or guaranteed.
 
@@ -26,6 +26,8 @@ java --add-modules jdk.httpserver -cp build NextLegServer
 ```
 
 The first run downloads the OpenOV schedule archive, currently about 230 MB compressed, and scans its large stop-time table. Processing time depends on the Pi and storage. The service checks for schedule updates every six hours and keeps the archive and a small route index in `~/.nextleg` by default. OpenOV's schedule feed is CC0. The downloader uses a descriptive User-Agent, gzip, and conditional requests as requested by the [feed usage policy](https://gtfs.openov.nl/LICENSE.TXT). Check the [feed listing](https://gtfs.openov.nl/gtfs-rt/) for the current archive size.
+
+For live data, the service fetches `trainUpdates.pb` and `tripUpdates.pb` (about 2 MB gzipped together) when a journey is requested, at most once a minute, with `If-None-Match`. It keeps only the trips on this route. When a feed fails, it uses the last good data for up to ten minutes, then falls back to scheduled times. OpenOV answers HTTP 429 when one address asks too often, so do not poll the feeds from other tools on the same network.
 
 The service listens on port `8080` and all Pi network interfaces by default. `NEXTLEG_HOST`, `NEXTLEG_PORT`, and `NEXTLEG_DATA_DIR` can override the bind address, port, and cache directory. `NEXTLEG_TRANSFER_BUFFER_MINUTES` changes the minimum connection buffer, which cannot be lower than 10. `NEXTLEG_MAX_TRANSFER_WAIT_MINUTES` changes the maximum wait and cannot be lower than the minimum buffer. Defaults are 10 and 60 minutes.
 
@@ -83,5 +85,6 @@ In NextLeg, enter `http://<pi-address>:8080` while the iPhone is on the same Wi-
 ## Endpoints
 
 - `GET /health` returns `{"status":"ok"}`.
-- `GET /api/v1/journey?direction=to_veghel` and `direction=to_blerick` return the next scheduled two-leg connection in the shared JSON model. If no connection is found in the available feed dates, the response has an empty `legs` array. Static responses omit real-time expected times and platform values.
+- `GET /api/v1/journey?direction=to_veghel` and `direction=to_blerick` return the next two-leg connection in the shared JSON model. The search uses expected times, so a delayed train that is still to come counts, and cancelled trips are skipped. If no connection is found in the available feed dates, the response has an empty `legs` array. `fetchedAt` is when the Pi built the response. `freshness` is `stale` when the schedule could not be refreshed.
+- Legs with live data have status `on_time` or `delayed`, and `platform` and `sourceUpdatedAt` when known. `expectedDeparture` and `delaySeconds` appear from one minute of difference. Legs without live data have status `scheduled`.
 - Add `departure=07:10` (local time, `HH:mm`) to get the first connection whose first leg leaves at or after that time. If today's has already left, the response uses the next day's.
