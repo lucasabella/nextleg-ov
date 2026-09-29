@@ -16,9 +16,24 @@ struct NextLegProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NextLegEntry>) -> Void) {
-        let entry = NextLegEntry(date: .now, trip: JourneyPreferences.savedTrip)
-        let timeline = Timeline(entries: [entry], policy: .never)
-        completion(timeline)
+        Task {
+            await refreshSavedJourney()
+            let entry = NextLegEntry(date: .now, trip: JourneyPreferences.savedTrip)
+            let timeline = Timeline(entries: [entry], policy: .after(.now.addingTimeInterval(15 * 60)))
+            completion(timeline)
+        }
+    }
+
+    private func refreshSavedJourney() async {
+        let serviceURL = JourneyPreferences.defaults.string(forKey: JourneyPreferences.serviceURLKey) ?? ""
+        guard !serviceURL.isEmpty else { return }
+        let direction = JourneyPreferences.selectedDirection
+        do {
+            JourneyPreferences.cache(try await JourneyService().fetchJourney(at: serviceURL, direction: direction))
+        } catch {
+            guard let cached = JourneyPreferences.cachedSnapshot(for: direction), cached.freshness != .sample else { return }
+            JourneyPreferences.cache(cached.withFreshness(.stale))
+        }
     }
 }
 
