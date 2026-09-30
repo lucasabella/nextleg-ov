@@ -13,6 +13,7 @@ nonisolated struct RideActivityAttributes: ActivityAttributes {
         let nextMode: Mode?
         let nextDeparture: Date?
         let nextDestination: String?
+        let journeyStartedAt: Date?
         let fetchedAt: Date
         let isStale: Bool
     }

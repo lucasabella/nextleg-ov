@@ -518,7 +518,7 @@ private struct JourneySettingsView: View {
             } header: {
                 Text("Auto direction")
             } footer: {
-                Text("Auto shows the way to work near home and the way home near work, and follows the train or bus you take. Always lets this work while NextLeg is closed. NextLeg only checks whether you are near home or work. It keeps no history and never sends your location to the Pi.")
+                Text("Auto shows the way to work near home and the way home near work, and follows the train or bus you take. A Live Activity starts automatically when NextLeg is open. Always lets NextLeg check your location in the background, which can use extra battery. Your location stays on this phone. NextLeg stores only which area you left and when, and never sends your location to the Pi.")
             }
 
             Section {

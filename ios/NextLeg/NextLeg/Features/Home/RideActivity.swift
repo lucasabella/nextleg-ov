@@ -1,5 +1,6 @@
 import ActivityKit
 import Foundation
+import UIKit
 
 enum RideActivity {
     static var isActive: Bool {
@@ -31,14 +32,21 @@ enum RideActivity {
         _ = try Activity.request(attributes: attributes, content: content, pushType: nil)
     }
 
+    static func startAutomatically(snapshot: JourneySnapshot, legIndex: Int) async throws {
+        guard UIApplication.shared.applicationState == .active else { return }
+        try await start(snapshot: snapshot, legIndex: legIndex)
+    }
+
     static func update(with snapshot: JourneySnapshot) async {
         for activity in Activity<RideActivityAttributes>.activities {
             let attributes = activity.attributes
             guard attributes.direction == snapshot.direction,
                   snapshot.legs.indices.contains(attributes.legIndex),
                   snapshot.legs[attributes.legIndex].scheduledDeparture == attributes.scheduledDeparture else { continue }
+            let index = currentLegIndex(in: snapshot.legs, startingAt: attributes.legIndex, at: .now)
             await activity.update(ActivityContent(
-                state: state(snapshot: snapshot, legIndex: attributes.legIndex),
+                state: state(snapshot: snapshot, legIndex: index,
+                             journeyStartedAt: activity.content.state.journeyStartedAt),
                 staleDate: snapshot.fetchedAt.addingTimeInterval(20 * 60)
             ))
         }
@@ -58,6 +66,7 @@ enum RideActivity {
                 nextMode: old.nextMode,
                 nextDeparture: old.nextDeparture,
                 nextDestination: old.nextDestination,
+                journeyStartedAt: old.journeyStartedAt,
                 fetchedAt: old.fetchedAt,
                 isStale: true
             )
@@ -71,7 +80,8 @@ enum RideActivity {
         }
     }
 
-    private static func state(snapshot: JourneySnapshot, legIndex: Int) -> RideActivityAttributes.ContentState {
+    private static func state(snapshot: JourneySnapshot, legIndex: Int,
+                              journeyStartedAt: Date? = nil) -> RideActivityAttributes.ContentState {
         let leg = snapshot.legs[legIndex]
         let next = snapshot.legs.indices.contains(legIndex + 1) ? snapshot.legs[legIndex + 1] : nil
         return RideActivityAttributes.ContentState(
@@ -85,10 +95,22 @@ enum RideActivity {
             nextMode: next?.mode,
             nextDeparture: next?.expectedDeparture ?? next?.scheduledDeparture,
             nextDestination: next?.destination,
+            journeyStartedAt: journeyStartedAt ?? snapshot.legs.first?.expectedDeparture ?? snapshot.legs.first?.scheduledDeparture,
             fetchedAt: snapshot.fetchedAt,
             isStale: snapshot.freshness != .fresh || Date.now.timeIntervalSince(snapshot.fetchedAt) >= 20 * 60
         )
     }
+
+    private static func currentLegIndex(in legs: [JourneyLeg], startingAt index: Int, at date: Date) -> Int {
+        for current in index..<legs.count {
+            let leg = legs[current]
+            if date < leg.departureTime { return current }
+            let arrival = leg.arrivalTime ?? legs.dropFirst(current + 1).first?.departureTime
+            if let arrival, date < arrival { return current }
+        }
+        return legs.count - 1
+    }
+
 }
 
 private enum RideActivityError: LocalizedError {

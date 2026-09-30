@@ -50,8 +50,8 @@ private struct RideActivityView: View {
                         .font(.headline.monospacedDigit())
                 }
             }
-            if let nextMode = state.nextMode, let nextDeparture = state.nextDeparture {
-                Text("Then \(nextMode.name.lowercased()) at \(nextDeparture.formatted(date: .omitted, time: .shortened))")
+            if let nextMode = state.nextMode, let nextDeparture = state.nextDeparture, let nextDestination = state.nextDestination {
+                Text("Change to \(nextMode.name.lowercased()) for \(nextDestination) at \(nextDeparture.formatted(date: .omitted, time: .shortened))")
                     .font(.subheadline)
                     .lineLimit(1)
             }
@@ -64,6 +64,14 @@ private struct RideActivityView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
+            if let journeyStartedAt = state.journeyStartedAt {
+                HStack(spacing: 4) {
+                    Text("Journey")
+                    Text(journeyStartedAt, style: .timer).monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
         }
     }
 
