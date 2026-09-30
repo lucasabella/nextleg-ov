@@ -10,6 +10,7 @@ final class AreaMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var authorization: CLAuthorizationStatus
     private let manager = CLLocationManager()
     private var monitoring: Task<Void, Never>?
+    private var monitor: CLMonitor?
 
     private override init() {
         authorization = manager.authorizationStatus
@@ -22,11 +23,8 @@ final class AreaMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard monitoring == nil, authorization == .authorizedAlways || authorization == .authorizedWhenInUse else { return }
         monitoring = Task {
             let monitor = await CLMonitor("NextLegAreas")
-            let watched = await monitor.identifiers
-            for area in Area.allCases where !watched.contains(area.rawValue) {
-                // Assume outside, so turning this on at home or at work does not count as leaving.
-                await monitor.add(area.condition, identifier: area.rawValue, assuming: .unsatisfied)
-            }
+            self.monitor = monitor
+            await Self.watchAreas(of: monitor)
             do {
                 let events = await monitor.events
                 for try await event in events {
@@ -39,6 +37,25 @@ final class AreaMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
                 }
             } catch {}
         }
+    }
+
+    /// Moves the areas to the picked home and work stops. The app calls this after a new stop is picked.
+    func updateAreas() {
+        guard let monitor else { return }
+        Task { await Self.watchAreas(of: monitor) }
+    }
+
+    /// Adds the home and work areas that are missing, and replaces both when a picked stop moved them.
+    private static func watchAreas(of monitor: CLMonitor) async {
+        let centers = Area.allCases.map { "\($0.stop.latitude),\($0.stop.longitude)" }.joined(separator: ";")
+        let moved = JourneyPreferences.defaults.string(forKey: JourneyPreferences.watchedAreasKey) != centers
+        let watched = await monitor.identifiers
+        for area in Area.allCases where moved || !watched.contains(area.rawValue) {
+            await monitor.remove(area.rawValue)
+            // Assume outside, so turning this on at home or at work does not count as leaving.
+            await monitor.add(area.condition, identifier: area.rawValue, assuming: .unsatisfied)
+        }
+        JourneyPreferences.defaults.set(centers, forKey: JourneyPreferences.watchedAreasKey)
     }
 
     func requestAccess() {
@@ -80,13 +97,13 @@ final class AreaMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
 }
 
 private extension Area {
-    /// Home covers Blerick station with room for the way there. Work is the Corridor bus stop in Veghel.
+    var stop: Stop { JourneyPreferences.stop(for: self) }
+
+    /// Home covers the home stop with room for the way there. Work is the work stop itself.
     var condition: CLMonitor.CircularGeographicCondition {
-        switch self {
-        case .home:
-            CLMonitor.CircularGeographicCondition(center: CLLocationCoordinate2D(latitude: 51.37230, longitude: 6.15539), radius: 1_500)
-        case .work:
-            CLMonitor.CircularGeographicCondition(center: CLLocationCoordinate2D(latitude: 51.60001, longitude: 5.51907), radius: 300)
-        }
+        CLMonitor.CircularGeographicCondition(
+            center: CLLocationCoordinate2D(latitude: stop.latitude, longitude: stop.longitude),
+            radius: self == .home ? 1_500 : 300
+        )
     }
 }

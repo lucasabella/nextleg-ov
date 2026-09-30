@@ -10,7 +10,12 @@ struct JourneyService {
 
     func fetchJourney(at serviceURL: String, direction: JourneyDirection, usualDeparture: String?,
                       boardedAt: Date?) async throws -> JourneySnapshot {
-        var query = [URLQueryItem(name: "direction", value: direction.rawValue)]
+        let stops = JourneyPreferences.stops(for: direction)
+        var query = [
+            URLQueryItem(name: "direction", value: direction.rawValue),
+            URLQueryItem(name: "from", value: stops.from.id),
+            URLQueryItem(name: "to", value: stops.to.id),
+        ]
         if let usualDeparture {
             query.append(URLQueryItem(name: "departure", value: usualDeparture))
         }
@@ -28,6 +33,20 @@ struct JourneyService {
             throw JourneyServiceError.wrongJourneyDirection
         }
         return snapshot
+    }
+
+    /// Stations and stops whose name matches what was typed, best match first.
+    func searchStops(at serviceURL: String, query: String) async throws -> [Stop] {
+        let data: Data
+        do {
+            data = try await get(serviceURL: serviceURL, path: "/api/v1/stops", query: [URLQueryItem(name: "query", value: query)])
+        } catch JourneyServiceError.httpStatus(let status) where status == 404 {
+            throw JourneyServiceError.stopSearchUnavailable
+        }
+        guard let response = try? JSONDecoder().decode(StopsResponse.self, from: data) else {
+            throw JourneyServiceError.invalidStopsResponse
+        }
+        return response.stops
     }
 
     private func get(serviceURL: String, path: String, query: [URLQueryItem] = []) async throws -> Data {
@@ -105,6 +124,10 @@ private struct HealthResponse: Decodable {
     let status: String
 }
 
+private struct StopsResponse: Decodable {
+    let stops: [Stop]
+}
+
 private enum JourneyServiceError: LocalizedError {
     case invalidServiceURL
     case httpsRequired
@@ -112,6 +135,8 @@ private enum JourneyServiceError: LocalizedError {
     case invalidHealthResponse
     case invalidJourneyResponse
     case wrongJourneyDirection
+    case stopSearchUnavailable
+    case invalidStopsResponse
     case httpStatus(Int)
 
     var errorDescription: String? {
@@ -128,6 +153,10 @@ private enum JourneyServiceError: LocalizedError {
             "The service returned journey data in an invalid format."
         case .wrongJourneyDirection:
             "The service returned a journey for the wrong direction."
+        case .stopSearchUnavailable:
+            "This service cannot search stops yet. Update the NextLeg service on the Pi."
+        case .invalidStopsResponse:
+            "The service returned stops in an invalid format."
         case .httpStatus(let status):
             "The service returned HTTP \(status)."
         }

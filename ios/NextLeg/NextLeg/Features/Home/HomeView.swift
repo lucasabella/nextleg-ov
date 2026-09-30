@@ -10,6 +10,8 @@ struct HomeView: View {
     @AppStorage(JourneyPreferences.usualDepartureKey(for: .toBlerick), store: JourneyPreferences.defaults) private var usualToHome = ""
     @AppStorage(JourneyPreferences.lastAreaKey, store: JourneyPreferences.defaults) private var lastArea = ""
     @AppStorage(JourneyPreferences.boardedAtKey, store: JourneyPreferences.defaults) private var boardedAt = 0.0
+    @AppStorage(JourneyPreferences.stopKey(for: .home), store: JourneyPreferences.defaults) private var homeStop = Data()
+    @AppStorage(JourneyPreferences.stopKey(for: .work), store: JourneyPreferences.defaults) private var workStop = Data()
     @ObservedObject private var areas = AreaMonitor.shared
 
     @State private var snapshots = JourneyPreferences.cachedSnapshots()
@@ -167,8 +169,8 @@ struct HomeView: View {
                 }
             }
             .toolbarTitleDisplayMode(.inline)
-            .onChange(of: home) { _, _ in reloadWidget() }
-            .onChange(of: work) { _, _ in reloadWidget() }
+            .onChange(of: homeStop) { _, _ in stopsChanged() }
+            .onChange(of: workStop) { _, _ in stopsChanged() }
             .onChange(of: directionMode) { _, _ in
                 reloadWidget()
                 Task { await refreshJourney() }
@@ -226,8 +228,8 @@ struct HomeView: View {
 
     private var settingsView: some View {
         JourneySettingsView(
-            home: $home,
-            work: $work,
+            home: home,
+            work: work,
             usualToWork: $usualToWork,
             usualToHome: $usualToHome,
             lastArea: lastArea,
@@ -263,6 +265,7 @@ struct HomeView: View {
     private func refreshJourney() async {
         guard !isRefreshingJourney, !serviceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let requestedDirection = selectedDirection
+        let requestedStops = [homeStop, workStop]
         let requestedURL = serviceURL
         let requestedDeparture = JourneyPreferences.usualDeparture(for: requestedDirection)
         let requestedBoardedAt = JourneyPreferences.boardedAt(for: requestedDirection)
@@ -271,7 +274,7 @@ struct HomeView: View {
         journeyMessage = nil
         defer {
             isRefreshingJourney = false
-            if serviceURL != requestedURL || selectedDirection != requestedDirection ||
+            if serviceURL != requestedURL || selectedDirection != requestedDirection || [homeStop, workStop] != requestedStops ||
                 JourneyPreferences.usualDeparture(for: requestedDirection) != requestedDeparture ||
                 JourneyPreferences.boardedAt(for: requestedDirection) != requestedBoardedAt {
                 Task { await refreshJourney() }
@@ -287,6 +290,7 @@ struct HomeView: View {
             )
             guard serviceURL == requestedURL,
                   selectedDirection == requestedDirection,
+                  [homeStop, workStop] == requestedStops,
                   JourneyPreferences.usualDeparture(for: requestedDirection) == requestedDeparture,
                   JourneyPreferences.boardedAt(for: requestedDirection) == requestedBoardedAt else { return }
             snapshots[requestedDirection] = snapshot
@@ -319,6 +323,19 @@ struct HomeView: View {
         let staleSnapshot = snapshot.withFreshness(.stale)
         snapshots[selectedDirection] = staleSnapshot
         JourneyPreferences.cache(staleSnapshot)
+    }
+
+    /// Saved journeys, the last area, and a tracked ride belong to the previous stops.
+    private func stopsChanged() {
+        JourneyPreferences.forgetRoute()
+        snapshots = [:]
+        AreaMonitor.shared.updateAreas()
+        reloadWidget()
+        Task {
+            await RideActivity.end()
+            isTrackingRide = false
+            await refreshJourney()
+        }
     }
 
     private func reloadWidget() {
@@ -447,8 +464,8 @@ private struct JourneyBoardCard: View {
 }
 
 private struct JourneySettingsView: View {
-    @Binding var home: String
-    @Binding var work: String
+    let home: String
+    let work: String
     @Binding var usualToWork: String
     @Binding var usualToHome: String
     let lastArea: String
@@ -463,18 +480,20 @@ private struct JourneySettingsView: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("Home") {
-                    TextField("Station or stop", text: $home)
-                        .multilineTextAlignment(.trailing)
+                NavigationLink {
+                    StopSearchView(title: "Home", serviceURL: serviceURL) { JourneyPreferences.save($0, for: .home) }
+                } label: {
+                    LabeledContent("Home", value: home)
                 }
-                LabeledContent("Work") {
-                    TextField("Station or stop", text: $work)
-                        .multilineTextAlignment(.trailing)
+                NavigationLink {
+                    StopSearchView(title: "Work", serviceURL: serviceURL) { JourneyPreferences.save($0, for: .work) }
+                } label: {
+                    LabeledContent("Work", value: work)
                 }
             } header: {
                 Text("Stops")
             } footer: {
-                Text("These names appear in your journey and widget.")
+                Text("Pick any station or stop in the Netherlands. NextLeg finds the fastest journey between them, direct or with one change.")
             }
 
             Section {

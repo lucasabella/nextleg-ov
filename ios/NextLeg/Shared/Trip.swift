@@ -41,10 +41,29 @@ enum JourneyFreshness: String, Codable {
 }
 
 enum Mode: String, Codable {
-    case train, bus
+    case train, bus, tram, metro, ferry
 
-    var name: String { self == .train ? "Train" : "Bus" }
-    var symbol: String { self == .train ? "train.side.front.car" : "bus.fill" }
+    var name: String { rawValue.capitalized }
+
+    var symbol: String {
+        switch self {
+        case .train: "train.side.front.car"
+        case .bus: "bus.fill"
+        case .tram: "tram.fill"
+        case .metro: "lightrail.fill"
+        case .ferry: "ferry.fill"
+        }
+    }
+}
+
+/// A station or stop picked in Settings from the Pi's stop search. The id is its name with a rounded position,
+/// which the Pi still recognises after OpenOV renumbers its stops.
+struct Stop: Codable, Hashable, Identifiable {
+    let id: String
+    let name: String
+    let latitude: Double
+    let longitude: Double
+    let modes: [Mode]
 }
 
 enum JourneyLegStatus: String, Codable {
@@ -360,9 +379,47 @@ enum JourneyPreferences {
     static let serviceURLKey = "serviceURL"
     static let lastAreaKey = "lastArea"
     static let boardedAtKey = "boardedAt"
+    static let watchedAreasKey = "watchedAreas"
     static let defaultHome = "Blerick"
     static let defaultWork = "Corridor, Veghel"
     static let defaults = UserDefaults(suiteName: appGroupIdentifier)!
+    static let defaultHomeStop = Stop(id: "Blerick|51.373|6.155", name: "Blerick",
+                                      latitude: 51.37230, longitude: 6.15539, modes: [.train])
+    static let defaultWorkStop = Stop(id: "Veghel, Corridor|51.600|5.519", name: "Veghel, Corridor",
+                                      latitude: 51.60001, longitude: 5.51907, modes: [.bus])
+
+    static func stopKey(for area: Area) -> String {
+        "stop.\(area.rawValue)"
+    }
+
+    /// The stop picked for home or work. Until one is picked, Blerick station and the Corridor stop in Veghel.
+    static func stop(for area: Area) -> Stop {
+        if let data = defaults.data(forKey: stopKey(for: area)), let stop = try? JSONDecoder().decode(Stop.self, from: data) {
+            return stop
+        }
+        return area == .home ? defaultHomeStop : defaultWorkStop
+    }
+
+    /// Saves a picked stop. Its name also becomes the home or work name the app and widget show.
+    static func save(_ stop: Stop, for area: Area) {
+        guard let data = try? JSONEncoder().encode(stop) else { return }
+        defaults.set(data, forKey: stopKey(for: area))
+        defaults.set(stop.name, forKey: area == .home ? homeKey : workKey)
+    }
+
+    /// Where a direction starts and ends.
+    static func stops(for direction: JourneyDirection) -> (from: Stop, to: Stop) {
+        direction == .toVeghel ? (stop(for: .home), stop(for: .work)) : (stop(for: .work), stop(for: .home))
+    }
+
+    /// Saved journeys and the last area belong to the previous stops, so picking a new stop drops them.
+    static func forgetRoute() {
+        for direction in JourneyDirection.allCases {
+            defaults.removeObject(forKey: snapshotKey(for: direction))
+        }
+        defaults.removeObject(forKey: lastAreaKey)
+        defaults.removeObject(forKey: boardedAtKey)
+    }
 
     private static func snapshotKey(for direction: JourneyDirection) -> String {
         "journeySnapshot.\(direction.rawValue)"
