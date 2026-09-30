@@ -85,6 +85,8 @@ struct JourneyLeg: Codable {
     let delaySeconds: Int?
     let platform: String?
     let sourceUpdatedAt: Date?
+    /// NS disruptions and engineering works on the stretch this train leg covers.
+    let notices: [JourneyNotice]?
     let scheduledArrival: Date?
     let expectedArrival: Date?
 
@@ -99,7 +101,8 @@ struct JourneyLeg: Codable {
         status: JourneyLegStatus,
         delaySeconds: Int? = nil,
         platform: String? = nil,
-        sourceUpdatedAt: Date? = nil
+        sourceUpdatedAt: Date? = nil,
+        notices: [JourneyNotice]? = nil
     ) {
         self.mode = mode
         self.origin = origin
@@ -112,11 +115,21 @@ struct JourneyLeg: Codable {
         self.delaySeconds = delaySeconds
         self.platform = platform
         self.sourceUpdatedAt = sourceUpdatedAt
+        self.notices = notices
     }
 
     var delayMinutes: Int? { delaySeconds.map { Int((Double($0) / 60).rounded()) } }
     var departureTime: Date { expectedDeparture ?? scheduledDeparture }
     var arrivalTime: Date? { expectedArrival ?? scheduledArrival }
+}
+
+/// An NS disruption or engineering work. The texts come from NS, in Dutch.
+struct JourneyNotice: Codable, Hashable {
+    let type: String
+    let title: String
+    let situation: String?
+    let expectedDuration: String?
+    let alternative: String?
 }
 
 struct JourneySnapshot: Codable {
@@ -226,6 +239,8 @@ struct Trip {
     var worstLeg: JourneyLeg?
     /// Short problem of the second leg, like "+7 min". Nil when it runs as planned.
     var followingStatus: String?
+    /// The first NS notice on the rest of the journey.
+    var notice: JourneyNotice?
 
     /// While `tracking` the ride the phone is on, the trip shows the part of it that matters at `date`.
     init(snapshot: JourneySnapshot, home: String, work: String, at date: Date = .now, tracking: Bool = false) {
@@ -273,6 +288,7 @@ struct Trip {
         case .skipped: followingStatus = "Skipped"
         default: followingStatus = nil
         }
+        notice = phase == .arrived ? nil : snapshot.legs.dropFirst(index).lazy.compactMap { $0.notices?.first }.first
     }
 
     private static func attention(_ leg: JourneyLeg) -> Int {
@@ -338,6 +354,22 @@ struct Trip {
 
     var statusColor: Color {
         isDelayed || isCancelled || isSkipped ? Palette.signal : Palette.steel
+    }
+
+    /// "Disruption" or "Works" when NS reports one on the route. Widgets show it instead of an on-time status.
+    var noticeLabel: String? {
+        notice.map { $0.type == "maintenance" ? "Works" : "Disruption" }
+    }
+
+    /// The NS notice in full: what happens, the replacement transport, and how long it lasts.
+    var noticeText: String? {
+        guard let notice else { return nil }
+        var parts = [notice.situation ?? notice.title]
+        if let alternative = notice.alternative {
+            parts.append(alternative.prefix(1).uppercased() + alternative.dropFirst() + ".")
+        }
+        if let expectedDuration = notice.expectedDuration { parts.append(expectedDuration) }
+        return parts.joined(separator: " ")
     }
 
     var freshnessLabel: String {

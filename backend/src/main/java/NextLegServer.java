@@ -86,10 +86,11 @@ public final class NextLegServer {
         URI feedUri = URI.create(System.getenv().getOrDefault("NEXTLEG_GTFS_URL", DEFAULT_FEED_URI.toString()));
         ScheduleRepository schedules = new ScheduleRepository(dataDirectory, archive, feedUri, archiveOverride != null);
         RealtimeFeeds realtime = new RealtimeFeeds();
+        NsNotices ns = new NsNotices(System.getenv("NS_API_KEY"));
         Set<String> watched = new LinkedHashSet<>(List.of(DEFAULT_HOME, DEFAULT_WORK));
 
         HttpServer server = HttpServer.create(new InetSocketAddress(host, port), 0);
-        server.createContext("/", exchange -> handle(exchange, schedules, realtime, watched, transferBufferMinutes, maxTransferWaitMinutes));
+        server.createContext("/", exchange -> handle(exchange, schedules, realtime, ns, watched, transferBufferMinutes, maxTransferWaitMinutes));
         server.start();
 
         ScheduledExecutorService refresh = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -105,7 +106,7 @@ public final class NextLegServer {
                 + " to " + maxTransferWaitMinutes + " minutes).");
     }
 
-    private static void handle(HttpExchange exchange, ScheduleRepository schedules, RealtimeFeeds realtime, Set<String> watched,
+    private static void handle(HttpExchange exchange, ScheduleRepository schedules, RealtimeFeeds realtime, NsNotices ns, Set<String> watched,
                                int transferBufferMinutes, int maxTransferWaitMinutes) throws IOException {
         String path = exchange.getRequestURI().getPath();
         if (!path.equals("/health") && !path.equals("/api/v1/journey") && !path.equals("/api/v1/stops")) {
@@ -130,7 +131,7 @@ public final class NextLegServer {
             String query = exchange.getRequestURI().getRawQuery();
             body = path.equals("/api/v1/stops")
                     ? stopsJson(state.data(), queryParameter(query, "query"))
-                    : journeyResponse(query, state, realtime, watched, transferBufferMinutes, maxTransferWaitMinutes);
+                    : journeyResponse(query, state, realtime, ns, watched, transferBufferMinutes, maxTransferWaitMinutes);
         } catch (IllegalArgumentException exception) {
             send(exchange, 400, jsonError(exception.getMessage()));
             return;
@@ -138,7 +139,7 @@ public final class NextLegServer {
         send(exchange, 200, body);
     }
 
-    private static String journeyResponse(String query, FeedState state, RealtimeFeeds realtime, Set<String> watched,
+    private static String journeyResponse(String query, FeedState state, RealtimeFeeds realtime, NsNotices ns, Set<String> watched,
                                           int bufferMinutes, int maxWaitMinutes) {
         String direction = queryParameter(query, "direction");
         if (direction == null || direction.isBlank()) {
@@ -167,7 +168,8 @@ public final class NextLegServer {
         Search search = new Search(timetable, updates, origin, destination, bufferMinutes, maxWaitMinutes);
         Journey journey = boardedAt == null ? null : search.boarded(boardedAt);
         if (journey == null) journey = usualDeparture == null ? search.next(now) : search.usual(usualDeparture, now);
-        return journeyJson(direction, journey, state, now);
+        boolean byTrain = journey != null && journey.rides().stream().anyMatch(ride -> timetable.tripModes[ride.trip()] == 0);
+        return journeyJson(direction, journey, state, now, byTrain ? ns.current(now) : List.of());
     }
 
     private static int place(Timetable timetable, String id, String fallback) {
@@ -333,19 +335,19 @@ public final class NextLegServer {
         }
     }
 
-    private static String journeyJson(String direction, Journey journey, FeedState state, Instant now) {
+    private static String journeyJson(String direction, Journey journey, FeedState state, Instant now, List<Notice> notices) {
         StringBuilder json = new StringBuilder("{\"direction\":\"" + direction + "\",\"fetchedAt\":\"" + ISO_INSTANT.format(now)
                 + "\",\"freshness\":\"" + (state.stale() ? "stale" : "fresh") + "\",\"legs\":[");
         if (journey != null) {
             for (int index = 0; index < journey.rides().size(); index++) {
                 if (index > 0) json.append(',');
-                json.append(legJson(state.data(), journey.rides().get(index)));
+                json.append(legJson(state.data(), journey.rides().get(index), notices));
             }
         }
         return json.append("]}").toString();
     }
 
-    private static String legJson(Timetable timetable, Ride ride) {
+    private static String legJson(Timetable timetable, Ride ride, List<Notice> notices) {
         int boardStop = timetable.eventStops[ride.board()];
         StringBuilder json = new StringBuilder("{\"mode\":\"" + MODES[timetable.tripModes[ride.trip()]]
                 + "\",\"origin\":\"" + jsonEscape(timetable.stopNames[boardStop])
@@ -373,7 +375,49 @@ public final class NextLegServer {
         if (live != null && live.updatedAt() != null) {
             json.append(",\"sourceUpdatedAt\":\"").append(ISO_INSTANT.format(live.updatedAt())).append('"');
         }
+        List<Notice> legNotices = noticesFor(timetable, ride, notices);
+        if (!legNotices.isEmpty()) {
+            json.append(",\"notices\":[");
+            for (int index = 0; index < legNotices.size(); index++) {
+                Notice notice = legNotices.get(index);
+                if (index > 0) json.append(',');
+                json.append("{\"type\":\"").append(notice.type()).append("\",\"title\":\"").append(jsonEscape(notice.title())).append('"');
+                if (notice.situation() != null) json.append(",\"situation\":\"").append(jsonEscape(notice.situation())).append('"');
+                if (notice.expectedDuration() != null) {
+                    json.append(",\"expectedDuration\":\"").append(jsonEscape(notice.expectedDuration())).append('"');
+                }
+                if (notice.alternative() != null) json.append(",\"alternative\":\"").append(jsonEscape(notice.alternative())).append('"');
+                json.append('}');
+            }
+            json.append(']');
+        }
         return json.append('}').toString();
+    }
+
+    /**
+     * The NS notices about the stretch a train ride covers, while it runs: the ride stops at two of the affected
+     * stations, or at the only one. Station and stop are the same place when they are within 500 metres.
+     */
+    private static List<Notice> noticesFor(Timetable timetable, Ride ride, List<Notice> notices) {
+        List<Notice> result = new ArrayList<>();
+        if (timetable.tripModes[ride.trip()] != 0) return result;
+        for (Notice notice : notices) {
+            if (notice.stations().isEmpty()) continue;
+            if (notice.start() != null && notice.start().isAfter(ride.arrival())) continue;
+            if (notice.end() != null && notice.end().isBefore(ride.departure())) continue;
+            int affected = 0;
+            for (double[] station : notice.stations()) {
+                for (int event = ride.board(); event <= ride.alight(); event++) {
+                    int stop = timetable.eventStops[event];
+                    if (Timetable.meters(station[0], station[1], timetable.stopLatitudes[stop], timetable.stopLongitudes[stop]) <= 500) {
+                        affected++;
+                        break;
+                    }
+                }
+            }
+            if (affected >= Math.min(2, notice.stations().size())) result.add(notice);
+        }
+        return result;
     }
 
     private static String stopsJson(Timetable timetable, String query) {
@@ -501,6 +545,9 @@ public final class NextLegServer {
     private record StopUpdate(Integer arrivalDelay, Integer departureDelay, boolean skipped, String platform) {}
     private record TripUpdate(boolean cancelled, Map<String, StopUpdate> stops, Instant updatedAt) {}
     private record FeedState(Timetable data, Instant fetchedAt, boolean stale) {}
+    /** An NS disruption or engineering work, with the stations it affects as latitude and longitude pairs. */
+    private record Notice(String type, String title, String situation, String expectedDuration, String alternative,
+                          Instant start, Instant end, List<double[]> stations) {}
 
     /**
      * The whole OpenOV timetable for a few service days, kept compact: every stop time is a slot in a few arrays, and a
@@ -1207,6 +1254,212 @@ public final class NextLegServer {
             Path temp = metadataFile.resolveSibling(metadataFile.getFileName() + ".part");
             try (var output = Files.newOutputStream(temp)) { metadata.store(output, "OpenOV static schedule cache"); }
             moveAtomically(temp, metadataFile);
+        }
+    }
+
+    /**
+     * NS disruptions and engineering works, which OpenOV does not carry. Only used when NS_API_KEY is set, and read
+     * at most every three minutes, well inside the free NS limit of 5000 requests a day.
+     */
+    private static final class NsNotices {
+        private static final URI FEED = URI.create("https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/disruptions?isActive=true");
+        private static final Duration CHECK_INTERVAL = Duration.ofMinutes(3);
+        private static final Duration MAX_AGE = Duration.ofMinutes(30);
+        private static final DateTimeFormatter NS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxx");
+        private final String key;
+        private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
+        private List<Notice> notices = List.of();
+        private Instant checkedAt = Instant.EPOCH;
+        private Instant loadedAt;
+
+        private NsNotices(String key) {
+            this.key = key == null || key.isBlank() ? null : key.trim();
+        }
+
+        /** The notices of the last good read. Old data is dropped after half an hour. */
+        private synchronized List<Notice> current(Instant now) {
+            if (key == null) return List.of();
+            if (now.isAfter(checkedAt.plus(CHECK_INTERVAL))) {
+                checkedAt = now;
+                try {
+                    HttpRequest request = HttpRequest.newBuilder(FEED)
+                            .timeout(Duration.ofSeconds(4))
+                            .header("Ocp-Apim-Subscription-Key", key)
+                            .header("User-Agent", "NextLeg/1.0 (self-hosted journey service)")
+                            .GET()
+                            .build();
+                    HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    if (response.statusCode() != 200) throw new IOException("HTTP " + response.statusCode() + ".");
+                    notices = parse(response.body());
+                    loadedAt = now;
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                } catch (IOException | RuntimeException exception) {
+                    System.err.println("NS disruptions failed: " + exception.getMessage());
+                }
+            }
+            return loadedAt != null && now.isBefore(loadedAt.plus(MAX_AGE)) ? notices : List.of();
+        }
+
+        /** Keeps disruptions and engineering works. General notices without stations, such as calamities, are left out. */
+        private static List<Notice> parse(String body) {
+            List<Notice> result = new ArrayList<>();
+            for (Object item : list(Json.parse(body))) {
+                Object type = field(item, "type");
+                if (!"DISRUPTION".equals(type) && !"MAINTENANCE".equals(type)) continue;
+                List<double[]> stations = new ArrayList<>();
+                for (Object publication : list(field(item, "publicationSections"))) {
+                    Object section = field(publication, "consequence", "section");
+                    if (section == null) section = field(publication, "section");
+                    for (Object station : list(field(section, "stations"))) {
+                        if (field(station, "coordinate", "lat") instanceof Double latitude
+                                && field(station, "coordinate", "lng") instanceof Double longitude) {
+                            stations.add(new double[] {latitude, longitude});
+                        }
+                    }
+                }
+                List<?> timespans = list(field(item, "timespans"));
+                Object timespan = timespans.isEmpty() ? null : timespans.get(0);
+                String title = text(field(item, "title"));
+                result.add(new Notice(type.equals("DISRUPTION") ? "disruption" : "maintenance",
+                        title == null ? "" : title.replaceAll("\\.$", ""),
+                        text(field(timespan, "situation", "label")),
+                        text(field(item, "expectedDuration", "description")),
+                        text(field(timespan, "alternativeTransport", "label")),
+                        time(field(item, "start")), time(field(item, "end")), stations));
+            }
+            return result;
+        }
+
+        private static Object field(Object node, String... path) {
+            for (String name : path) {
+                if (!(node instanceof Map<?, ?> map)) return null;
+                node = map.get(name);
+            }
+            return node;
+        }
+
+        private static List<?> list(Object node) {
+            return node instanceof List<?> list ? list : List.of();
+        }
+
+        private static String text(Object node) {
+            return node instanceof String value && !value.isBlank() ? value.trim() : null;
+        }
+
+        private static Instant time(Object node) {
+            if (!(node instanceof String value)) return null;
+            try {
+                return java.time.OffsetDateTime.parse(value, NS_TIME).toInstant();
+            } catch (DateTimeParseException exception) {
+                return null;
+            }
+        }
+    }
+
+    /** Just enough JSON reading for the NS API: objects become maps, arrays lists, and numbers doubles. */
+    private static final class Json {
+        private final String text;
+        private int position;
+
+        private Json(String text) {
+            this.text = text;
+        }
+
+        private static Object parse(String text) {
+            Json json = new Json(text);
+            Object value = json.value();
+            json.space();
+            if (json.position != text.length()) throw new IllegalArgumentException("Unexpected text after JSON value.");
+            return value;
+        }
+
+        private Object value() {
+            space();
+            if (position >= text.length()) throw new IllegalArgumentException("Unexpected end of JSON.");
+            char next = text.charAt(position);
+            if (next == '{') {
+                position++;
+                Map<String, Object> object = new HashMap<>();
+                space();
+                if (take('}')) return object;
+                do {
+                    space();
+                    String key = string();
+                    space();
+                    expect(':');
+                    object.put(key, value());
+                    space();
+                } while (take(','));
+                expect('}');
+                return object;
+            }
+            if (next == '[') {
+                position++;
+                List<Object> array = new ArrayList<>();
+                space();
+                if (take(']')) return array;
+                do {
+                    array.add(value());
+                    space();
+                } while (take(','));
+                expect(']');
+                return array;
+            }
+            if (next == '"') return string();
+            for (String word : new String[] {"true", "false", "null"}) {
+                if (text.startsWith(word, position)) {
+                    position += word.length();
+                    return word.equals("null") ? null : Boolean.valueOf(word);
+                }
+            }
+            int start = position;
+            while (position < text.length() && "+-0123456789.eE".indexOf(text.charAt(position)) >= 0) position++;
+            if (start == position) throw new IllegalArgumentException("Invalid JSON at " + start + ".");
+            return Double.parseDouble(text.substring(start, position));
+        }
+
+        private String string() {
+            expect('"');
+            StringBuilder result = new StringBuilder();
+            while (position < text.length()) {
+                char next = text.charAt(position++);
+                if (next == '"') return result.toString();
+                if (next != '\\') {
+                    result.append(next);
+                    continue;
+                }
+                char escaped = text.charAt(position++);
+                switch (escaped) {
+                    case 'n' -> result.append('\n');
+                    case 't' -> result.append('\t');
+                    case 'r' -> result.append('\r');
+                    case 'b' -> result.append('\b');
+                    case 'f' -> result.append('\f');
+                    case 'u' -> {
+                        result.append((char) Integer.parseInt(text.substring(position, position + 4), 16));
+                        position += 4;
+                    }
+                    default -> result.append(escaped);
+                }
+            }
+            throw new IllegalArgumentException("Unterminated JSON string.");
+        }
+
+        private void space() {
+            while (position < text.length() && Character.isWhitespace(text.charAt(position))) position++;
+        }
+
+        private boolean take(char expected) {
+            if (position < text.length() && text.charAt(position) == expected) {
+                position++;
+                return true;
+            }
+            return false;
+        }
+
+        private void expect(char expected) {
+            if (!take(expected)) throw new IllegalArgumentException("Expected " + expected + " in JSON at " + position + ".");
         }
     }
 

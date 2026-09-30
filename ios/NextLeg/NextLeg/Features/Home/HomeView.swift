@@ -451,6 +451,13 @@ private struct JourneyBoardCard: View {
                 }
                 .font(.caption.weight(.medium))
             }
+
+            if let noticeText = trip.noticeText {
+                Label(noticeText, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(AppStyle.alert)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)

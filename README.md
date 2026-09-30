@@ -6,6 +6,8 @@ In Settings, pick your home and work stop by typing part of the name. The list c
 
 In Auto, the app uses location updates to pick the direction: near the home stop it shows the way to work, near the work stop the way home. Between those areas, it keeps the direction from the last stop and follows the train or bus you board. It needs location set to Always to check location in the background. Exact coordinates stay on the phone and are not stored or sent to the Pi. NextLeg stores which area you left and when. Without location, Auto shows the way to work before 12:00 and the way home after. The simulator cannot trigger these area events, so test this part on a phone.
 
+With an NS API key on the Pi, a train leg also shows NS disruptions and engineering works on its route: the full text in the app, and "Disruption" or "Works" in the widgets.
+
 Saved journey data is shown as stale once its `fetchedAt` time is more than 20 minutes old. The app and widget also mark cached data stale when a refresh fails.
 
 ## Ride Live Activity

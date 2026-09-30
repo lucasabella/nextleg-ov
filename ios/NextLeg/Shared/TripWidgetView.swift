@@ -80,8 +80,13 @@ struct TripWidgetView: View {
 
     private var status: some View {
         HStack(spacing: 6) {
-            Label(trip.status, systemImage: trip.statusSymbol)
-                .foregroundStyle(trip.statusColor)
+            if let noticeLabel = trip.noticeLabel, !(trip.isDelayed || trip.isCancelled || trip.isSkipped) {
+                Label(noticeLabel, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Palette.signal)
+            } else {
+                Label(trip.status, systemImage: trip.statusSymbol)
+                    .foregroundStyle(trip.statusColor)
+            }
             if (trip.isDelayed || trip.isCancelled || trip.isSkipped), let departure = trip.departure {
                 Text("Was \(departure)").strikethrough().foregroundStyle(Palette.steel)
             }
@@ -134,15 +139,16 @@ struct LockScreenTripView: View {
         return minutes < 60 ? "in \(minutes) min" : "in \(minutes / 60) h \(minutes % 60) min"
     }
 
-    /// Short enough for the widget width: the update time only shows when no delay needs the room.
+    /// Short enough for the widget width: the update time only shows when no delay or NS notice needs the room.
     private var details: String {
         var parts: [String] = []
         let hasProblem = trip.isDelayed || trip.isCancelled || trip.isSkipped
         if let phaseTitle = trip.phaseTitle { parts.append(phaseTitle) }
         if hasProblem { parts.append(trip.status) }
+        if let noticeLabel = trip.noticeLabel { parts.append(noticeLabel) }
         if let platform = trip.platform { parts.append("Platform \(platform)") }
         switch trip.freshness {
-        case .fresh: if !hasProblem { parts.append("Updated \(trip.updated)") }
+        case .fresh: if !hasProblem && trip.noticeLabel == nil { parts.append("Updated \(trip.updated)") }
         case .stale: parts.append("Saved data")
         case .sample: parts.append("Example")
         }
@@ -180,13 +186,20 @@ struct DelayBadgeView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// A delay or cancellation says more than an NS notice, so the notice only shows without one.
+    private var showsNotice: Bool {
+        guard trip.noticeLabel != nil else { return false }
+        return ![.delayed, .cancelled, .skipped].contains(trip.worstLeg?.status)
+    }
+
     private var symbol: String {
-        if trip.freshness == .stale { return "exclamationmark.triangle" }
+        if trip.freshness == .stale || showsNotice { return "exclamationmark.triangle" }
         return trip.worstLeg?.mode.symbol ?? "clock"
     }
 
     /// Old data still shows the last known status, with a warning symbol and caption.
     private var title: Text {
+        if showsNotice { return Text("!") }
         switch trip.worstLeg?.status {
         case .delayed: return Text("+\(trip.worstLeg?.delayMinutes ?? 0)")
         case .onTime: return Text(Image(systemName: "checkmark"))
@@ -198,6 +211,7 @@ struct DelayBadgeView: View {
     private var caption: String {
         if trip.freshness == .stale { return "Old data" }
         if trip.freshness == .sample { return "Example" }
+        if showsNotice, let noticeLabel = trip.noticeLabel { return noticeLabel }
         switch trip.worstLeg?.status {
         case .delayed: return "min late"
         case .onTime: return "On time"
