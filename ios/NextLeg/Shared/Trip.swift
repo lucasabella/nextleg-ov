@@ -75,24 +75,24 @@ struct JourneyLeg: Codable {
         destination: String,
         scheduledDeparture: Date,
         expectedDeparture: Date? = nil,
+        scheduledArrival: Date? = nil,
+        expectedArrival: Date? = nil,
         status: JourneyLegStatus,
         delaySeconds: Int? = nil,
         platform: String? = nil,
-        sourceUpdatedAt: Date? = nil,
-        scheduledArrival: Date? = nil,
-        expectedArrival: Date? = nil
+        sourceUpdatedAt: Date? = nil
     ) {
         self.mode = mode
         self.origin = origin
         self.destination = destination
         self.scheduledDeparture = scheduledDeparture
         self.expectedDeparture = expectedDeparture
+        self.scheduledArrival = scheduledArrival
+        self.expectedArrival = expectedArrival
         self.status = status
         self.delaySeconds = delaySeconds
         self.platform = platform
         self.sourceUpdatedAt = sourceUpdatedAt
-        self.scheduledArrival = scheduledArrival
-        self.expectedArrival = expectedArrival
     }
 
     var delayMinutes: Int? { delaySeconds.map { Int((Double($0) / 60).rounded()) } }
@@ -205,7 +205,7 @@ struct Trip {
     var freshness: JourneyFreshness
     /// The leg that needs the most attention: cancelled first, then the biggest delay, then on time.
     var worstLeg: JourneyLeg?
-    /// Short problem of the second leg, like "+7 MIN". Nil when it runs as planned.
+    /// Short problem of the second leg, like "+7 min". Nil when it runs as planned.
     var followingStatus: String?
 
     /// While `tracking` the ride the phone is on, the trip shows the part of it that matters at `date`.
@@ -249,9 +249,9 @@ struct Trip {
             ? .stale : snapshot.freshness
         worstLeg = snapshot.legs.max { Self.attention($0) < Self.attention($1) }
         switch following?.status {
-        case .delayed: followingStatus = "+\(following?.delayMinutes ?? 0) MIN"
-        case .cancelled: followingStatus = "CANCELLED"
-        case .skipped: followingStatus = "SKIPPED"
+        case .delayed: followingStatus = "+\(following?.delayMinutes ?? 0) min"
+        case .cancelled: followingStatus = "Cancelled"
+        case .skipped: followingStatus = "Skipped"
         default: followingStatus = nil
         }
     }
@@ -323,9 +323,9 @@ struct Trip {
 
     var freshnessLabel: String {
         switch freshness {
-        case .fresh: "UPDATED"
-        case .stale: "STALE · UPDATED"
-        case .sample: "SAMPLE · UPDATED"
+        case .fresh: "Updated at"
+        case .stale: "Saved at"
+        case .sample: "Example at"
         }
     }
 
@@ -346,7 +346,7 @@ struct Trip {
         return Trip(snapshot: .sample(direction: direction), home: resolvedHome, work: resolvedWork)
     }
 
-    private static func time(_ date: Date) -> String {
+    private nonisolated static func time(_ date: Date) -> String {
         date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
     }
 }
@@ -432,12 +432,12 @@ enum JourneyPreferences {
 }
 
 enum Palette {
-    static let night = Color(hex: 0x0D0F12)
-    static let graphite = Color(hex: 0x1C2027)
-    static let chalk = Color(hex: 0xF2F0E9)
-    static let steel = Color(hex: 0x959DA6)
-    static let amber = Color(hex: 0xFFB224)
-    static let signal = Color(hex: 0xFF6A55)
+    static let night = Color(hex: 0x10251E)
+    static let graphite = Color(hex: 0x1B352B)
+    static let chalk = Color(hex: 0xF1F5F2)
+    static let steel = Color(hex: 0xB0BEB6)
+    static let amber = Color(hex: 0xE4AD24)
+    static let signal = Color(hex: 0xF27B61)
 }
 
 extension Color {

@@ -5,5 +5,6 @@ import SwiftUI
 struct NextLegWidgetBundle: WidgetBundle {
     var body: some Widget {
         NextLegWidget()
+        RideActivityWidget()
     }
 }

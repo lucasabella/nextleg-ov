@@ -28,7 +28,8 @@ final class AreaMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
                 await monitor.add(area.condition, identifier: area.rawValue, assuming: .unsatisfied)
             }
             do {
-                for try await event in monitor.events {
+                let events = await monitor.events
+                for try await event in events {
                     guard let area = Area(rawValue: event.identifier) else { continue }
                     if event.state == .satisfied {
                         Self.record(area, inside: true, at: event.date)

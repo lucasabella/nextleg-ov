@@ -17,25 +17,25 @@ struct TripWidgetView: View {
                         status.padding(.top, 2)
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("→ \(trip.to.uppercased())")
+                        Text("To \(trip.to)")
                             .font(.subheadline.weight(.heavy))
                             .foregroundStyle(Palette.chalk)
                             .lineLimit(2)
-                        Label(trip.origin.uppercased(), systemImage: trip.originSymbol)
-                            .font(.caption2.weight(.heavy))
+                        Label(trip.origin, systemImage: trip.originSymbol)
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(Palette.steel)
                             .lineLimit(2)
                         Spacer(minLength: 0)
                         if let followingLeg = trip.followingLeg {
                             HStack(spacing: 4) {
-                                Label("THEN \(followingLeg.name.uppercased())", systemImage: followingLeg.symbol)
+                                Label("Then \(followingLeg.name.lowercased())", systemImage: followingLeg.symbol)
                                     .foregroundStyle(Palette.steel)
                                 if let followingStatus = trip.followingStatus {
                                     Text(followingStatus)
                                         .foregroundStyle(Palette.signal)
                                 }
                             }
-                            .font(.caption.weight(.heavy))
+                            .font(.caption.weight(.semibold))
                         }
                         updated
                     }
@@ -44,9 +44,8 @@ struct TripWidgetView: View {
             } else {
                 VStack(alignment: .leading, spacing: 3) {
                     leg
-                    Text("→ \(trip.to.uppercased())")
-                        .font(.caption2.weight(.bold))
-                        .tracking(0.5)
+                    Text("To \(trip.to)")
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(Palette.steel)
                     Spacer(minLength: 0)
                     FlapTiles(text: trip.shownTime, size: 28)
@@ -63,31 +62,31 @@ struct TripWidgetView: View {
     private var leg: some View {
         HStack {
             if let nextLeg = trip.nextLeg {
-                Label((trip.phaseTitle ?? nextLeg.name).uppercased(), systemImage: nextLeg.symbol)
+                Label(trip.phaseTitle ?? nextLeg.name, systemImage: nextLeg.symbol)
                     .foregroundStyle(Palette.chalk)
             } else {
-                Label("NO DEPARTURE", systemImage: "clock")
+                Label("No departure", systemImage: "clock")
                     .foregroundStyle(Palette.steel)
             }
             Spacer()
             if let platform = trip.platform {
-                Text("PL \(platform)")
+                Text("Platform \(platform)")
                     .foregroundStyle(Palette.amber)
                     .widgetAccentable()
             }
         }
-        .font(.caption.weight(.heavy))
+        .font(.caption.weight(.semibold))
     }
 
     private var status: some View {
         HStack(spacing: 6) {
-            Label(trip.status.uppercased(), systemImage: trip.statusSymbol)
+            Label(trip.status, systemImage: trip.statusSymbol)
                 .foregroundStyle(trip.statusColor)
             if (trip.isDelayed || trip.isCancelled || trip.isSkipped), let departure = trip.departure {
-                Text(departure).strikethrough().foregroundStyle(Palette.steel)
+                Text("Was \(departure)").strikethrough().foregroundStyle(Palette.steel)
             }
         }
-        .font(.caption.weight(.heavy))
+        .font(.caption.weight(.semibold))
     }
 
     private var updated: some View {
@@ -104,7 +103,7 @@ struct LockScreenTripView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Label("→ \(trip.to)", systemImage: trip.nextLeg?.symbol ?? "clock")
+            Label("To \(trip.to)", systemImage: trip.nextLeg?.symbol ?? "clock")
                 .font(.caption.weight(.semibold))
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 // The time keeps its full width. The countdown shrinks when the widget is narrow.
@@ -139,38 +138,46 @@ struct LockScreenTripView: View {
     private var details: String {
         var parts: [String] = []
         let hasProblem = trip.isDelayed || trip.isCancelled || trip.isSkipped
-        if let phaseTitle = trip.phaseTitle { parts.append(phaseTitle.uppercased()) }
-        if hasProblem { parts.append(trip.status.uppercased()) }
-        if let platform = trip.platform { parts.append("PL \(platform)") }
+        if let phaseTitle = trip.phaseTitle { parts.append(phaseTitle) }
+        if hasProblem { parts.append(trip.status) }
+        if let platform = trip.platform { parts.append("Platform \(platform)") }
         switch trip.freshness {
-        case .fresh: if !hasProblem { parts.append("UPDATED \(trip.updated)") }
-        case .stale: parts.append("OLD DATA")
-        case .sample: parts.append("SAMPLE")
+        case .fresh: if !hasProblem { parts.append("Updated \(trip.updated)") }
+        case .stale: parts.append("Saved data")
+        case .sample: parts.append("Example")
         }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: ", ")
     }
 }
 
-/// Small round Lock Screen widget that shows at a glance whether the journey runs late.
+/// One-slot Lock Screen badge with a rounded-square background.
 struct DelayBadgeView: View {
     let trip: Trip
 
     var body: some View {
         ZStack {
-            AccessoryWidgetBackground()
-            VStack(spacing: 0) {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(0.12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                }
+                .padding(2)
+
+            VStack(spacing: 1) {
                 Image(systemName: symbol)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                 title
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
                     .widgetAccentable()
                 Text(caption)
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 10, weight: .medium))
             }
             .lineLimit(1)
             .minimumScaleFactor(0.6)
-            .padding(6)
+            .padding(5)
         }
+        .accessibilityElement(children: .combine)
     }
 
     private var symbol: String {
@@ -189,14 +196,14 @@ struct DelayBadgeView: View {
     }
 
     private var caption: String {
-        if trip.freshness == .stale { return "OLD DATA" }
-        if trip.freshness == .sample { return "SAMPLE" }
+        if trip.freshness == .stale { return "Old data" }
+        if trip.freshness == .sample { return "Example" }
         switch trip.worstLeg?.status {
-        case .delayed: return "MIN LATE"
-        case .onTime: return "ON TIME"
-        case .cancelled: return "CANCELLED"
-        case .skipped: return "SKIPPED"
-        default: return "NO LIVE"
+        case .delayed: return "min late"
+        case .onTime: return "On time"
+        case .cancelled: return "Cancelled"
+        case .skipped: return "Skipped"
+        default: return "No live time"
         }
     }
 }

@@ -16,6 +16,7 @@ struct HomeView: View {
     @State private var connectionState: ConnectionState = .notChecked
     @State private var isCheckingConnection = false
     @State private var isRefreshingJourney = false
+    @State private var isTrackingRide = RideActivity.isActive
     @State private var journeyMessage: String?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -30,22 +31,24 @@ struct HomeView: View {
     }
 
     private var autoExplanation: String {
-        areas.authorization == .authorizedAlways || areas.authorization == .authorizedWhenInUse
-            ? "Auto shows the way to work near home, the way home near work, and follows the ride you are on."
-            : "Auto shows the way to work before 12:00 and the way home after. Allow location in Settings to follow where you are."
+        switch areas.authorization {
+        case .authorizedAlways: "Auto follows your location and the ride you board."
+        case .authorizedWhenInUse: "Auto follows your location while the app is open."
+        default: "Auto switches at noon. Turn on location to follow your ride."
+        }
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Your next journey")
-                            .font(.largeTitle.bold())
-                            .foregroundStyle(Palette.chalk)
-                        Text(autoExplanation)
+                        Text(previewTrip.phaseTitle ?? "Next departure")
+                            .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                            .foregroundStyle(.primary)
+                        Text(directionMode == .auto ? autoExplanation : "Your next train or bus, at a glance.")
                             .font(.subheadline)
-                            .foregroundStyle(Palette.steel)
+                            .foregroundStyle(.secondary)
                     }
 
                     Picker("Direction", selection: $directionMode.animation()) {
@@ -55,20 +58,12 @@ struct HomeView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        TripWidgetView(trip: previewTrip, isMedium: true)
-                            .padding(16)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 164)
-                            .background(Palette.night, in: .rect(cornerRadius: 26))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 26)
-                                    .strokeBorder(Palette.chalk.opacity(0.08))
-                            }
+                    JourneyBoardCard(trip: previewTrip)
 
+                    VStack(alignment: .leading, spacing: 10) {
                         Label(freshnessMessage, systemImage: freshnessSymbol)
                             .font(.footnote)
-                            .foregroundStyle(previewTrip.freshness == .fresh ? Palette.steel : Palette.amber)
+                            .foregroundStyle(freshnessColor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -76,46 +71,97 @@ struct HomeView: View {
                         NavigationLink {
                             settingsView
                         } label: {
-                            Label("Set up live journeys", systemImage: "arrow.right")
+                            Label("Connect a data source", systemImage: "antenna.radiowaves.left.and.right")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .tint(AppStyle.buttonTint)
                     } else {
                         Button {
                             Task { await refreshJourney() }
                         } label: {
                             if isRefreshingJourney {
-                                ProgressView()
-                                    .frame(maxWidth: .infinity)
+                                HStack(spacing: 10) {
+                                    ProgressView()
+                                    Text("Refreshing journey…")
+                                }
+                                .frame(maxWidth: .infinity)
                             } else {
                                 Label("Refresh journey", systemImage: "arrow.clockwise")
                                     .frame(maxWidth: .infinity)
                             }
                         }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .tint(AppStyle.buttonTint)
                         .disabled(isCheckingConnection || isRefreshingJourney)
+                    }
+                    if isTrackingRide {
+                        Button("Stop Live Activity") {
+                            Task {
+                                await RideActivity.end()
+                                isTrackingRide = false
+                            }
+                        }
+                    } else if let snapshot = snapshots[selectedDirection], previewTrip.freshness == .fresh {
+                        HStack {
+                            ForEach(snapshot.legs.indices, id: \.self) { index in
+                                Button("Track \(snapshot.legs[index].mode.name.lowercased())") {
+                                    Task {
+                                        do {
+                                            try await RideActivity.start(snapshot: snapshot, legIndex: index)
+                                            isTrackingRide = true
+                                        } catch {
+                                            journeyMessage = error.localizedDescription
+                                        }
+                                    }
+                                }
+                                .disabled(snapshot.legs[index].status == .cancelled || snapshot.legs[index].status == .skipped)
+                            }
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     if let journeyMessage {
                         Text(journeyMessage)
                             .font(.footnote)
-                            .foregroundStyle(connectionState.isError ? Palette.signal : Palette.steel)
+                            .foregroundStyle(connectionState.isError ? AppStyle.alert : AppStyle.warning)
                     }
                 }
-                .frame(maxWidth: 520)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 24)
+                .frame(maxWidth: 500)
+                .padding(.horizontal, 22)
+                .padding(.top, 28)
+                .padding(.bottom, 32)
                 .frame(maxWidth: .infinity)
             }
-            .background(Color(hex: 0x15191F))
+            .background(Color(uiColor: .systemGroupedBackground))
+            .scrollIndicators(.hidden)
             // Also runs when coming back from Settings, so a changed usual departure shows right away.
-            .onAppear { Task { await refreshJourney() } }
+            .onAppear {
+                isTrackingRide = RideActivity.isActive
+                Task { await refreshJourney() }
+            }
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        Image("BrandMark")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 30, height: 30)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .accessibilityHidden(true)
+                        Text("NextLeg")
+                            .font(.headline.weight(.semibold))
+                    }
+                    .accessibilityElement(children: .combine)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
                         settingsView
                     } label: {
                         Image(systemName: "gearshape")
+                            .font(.system(size: 17, weight: .medium))
                     }
                     .accessibilityLabel("Settings")
                 }
@@ -128,7 +174,10 @@ struct HomeView: View {
                 Task { await refreshJourney() }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { await refreshJourney() } }
+                if phase == .active {
+                    isTrackingRide = RideActivity.isActive
+                    Task { await refreshJourney() }
+                }
             }
             .onChange(of: usualToWork) { _, _ in reloadWidget() }
             .onChange(of: usualToHome) { _, _ in reloadWidget() }
@@ -145,22 +194,34 @@ struct HomeView: View {
                     JourneyPreferences.cache(staleSnapshot)
                 }
                 reloadWidget()
+                Task { await RideActivity.markStale(direction: selectedDirection) }
             }
         }
-        .tint(Palette.amber)
-        .preferredColorScheme(.dark)
+        .tint(AppStyle.accent)
     }
 
     private var freshnessMessage: String {
         switch previewTrip.freshness {
-        case .fresh: "Live journey · updated \(previewTrip.updated)"
-        case .stale: "Saved journey · updated \(previewTrip.updated). Times may have changed."
+        case .fresh: "Live data updated at \(previewTrip.updated)."
+        case .stale: "Saved data from \(previewTrip.updated). Times may have changed."
         case .sample: "Example journey. Times and stops are fictional."
         }
     }
 
     private var freshnessSymbol: String {
-        previewTrip.freshness == .fresh ? "checkmark.circle" : "info.circle"
+        switch previewTrip.freshness {
+        case .fresh: "checkmark.circle.fill"
+        case .stale: "clock.arrow.circlepath"
+        case .sample: "info.circle"
+        }
+    }
+
+    private var freshnessColor: Color {
+        switch previewTrip.freshness {
+        case .fresh: AppStyle.positive
+        case .stale: AppStyle.warning
+        case .sample: .secondary
+        }
     }
 
     private var settingsView: some View {
@@ -230,19 +291,14 @@ struct HomeView: View {
                   JourneyPreferences.boardedAt(for: requestedDirection) == requestedBoardedAt else { return }
             snapshots[requestedDirection] = snapshot
             JourneyPreferences.cache(snapshot)
+            await RideActivity.update(with: snapshot)
             connectionState = .connected
-            switch snapshot.freshness {
-            case .fresh:
-                journeyMessage = "Journey updated."
-            case .stale:
-                journeyMessage = "The Pi returned stale data."
-            case .sample:
-                journeyMessage = "Pi connected, but this is fictional sample data."
-            }
+            journeyMessage = nil
             reloadWidget()
         } catch {
             guard serviceURL == requestedURL, selectedDirection == requestedDirection else { return }
             markSelectedSnapshotStale()
+            await RideActivity.markStale(direction: requestedDirection)
             connectionState = .failed(error.localizedDescription)
             journeyMessage = cachedMessage
             reloadWidget()
@@ -251,11 +307,11 @@ struct HomeView: View {
 
     private var cachedMessage: String {
         guard let snapshot = snapshots[selectedDirection] else {
-            return "Showing sample preview because no saved trip is available."
+            return "Could not refresh. No saved trip is available."
         }
         return snapshot.freshness == .sample
-            ? "Showing fictional sample data because no live trip is saved."
-            : "Showing the last saved trip, marked stale."
+            ? "Could not refresh. Showing the example journey."
+            : "Could not refresh. Showing saved data."
     }
 
     private func markSelectedSnapshotStale() {
@@ -267,6 +323,126 @@ struct HomeView: View {
 
     private func reloadWidget() {
         WidgetCenter.shared.reloadTimelines(ofKind: JourneyPreferences.widgetKind)
+    }
+}
+
+private enum AppStyle {
+    static let forest = Color(hex: 0x173D30)
+    static let boardText = Color(hex: 0xF1F5F2)
+    static let amber = Color(hex: 0xE4AD24)
+    static let accent = adaptive(light: 0x173D30, dark: 0xA2D2B1)
+    static let buttonTint = adaptive(light: 0x173D30, dark: 0x286D49)
+    static let positive = adaptive(light: 0x347553, dark: 0x79C893)
+    static let warning = adaptive(light: 0x8A5B00, dark: 0xF0C25C)
+    static let alert = Color(hex: 0xFF9B82)
+    static let quietBoardText = Color(hex: 0xBDD0C5)
+
+    private static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(
+                red: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255,
+                alpha: 1
+            )
+        })
+    }
+}
+
+private struct JourneyBoardCard: View {
+    let trip: Trip
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 12) {
+                Label(trip.phaseTitle ?? trip.nextLeg?.name ?? "No departure", systemImage: trip.nextLeg?.symbol ?? "clock")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppStyle.boardText.opacity(0.88))
+
+                Spacer(minLength: 4)
+
+                if let platform = trip.platform {
+                    Text("Platform \(platform)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppStyle.forest)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(AppStyle.amber, in: Capsule())
+                }
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(trip.shownTime)
+                    .font(.system(size: 62, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(AppStyle.boardText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .accessibilityLabel("\(trip.phase == .riding ? "Arrival" : "Departure") at \(trip.shownTime)")
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 5) {
+                    Text(trip.status)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                        .multilineTextAlignment(.trailing)
+                    if (trip.isDelayed || trip.isCancelled || trip.isSkipped), let departure = trip.departure {
+                        Text("Was \(departure)")
+                            .font(.caption)
+                            .strikethrough()
+                            .foregroundStyle(AppStyle.quietBoardText)
+                    }
+                }
+            }
+
+            HStack(alignment: .center, spacing: 13) {
+                VStack(spacing: 0) {
+                    Circle()
+                        .strokeBorder(AppStyle.boardText, lineWidth: 2)
+                        .frame(width: 10, height: 10)
+                    Rectangle()
+                        .fill(AppStyle.boardText.opacity(0.45))
+                        .frame(width: 1, height: 22)
+                    Circle()
+                        .fill(AppStyle.amber)
+                        .frame(width: 10, height: 10)
+                }
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(trip.origin)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Text(trip.to)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(AppStyle.boardText)
+            }
+
+            if let followingLeg = trip.followingLeg {
+                HStack(spacing: 8) {
+                    Label("Then \(followingLeg.name.lowercased())", systemImage: followingLeg.symbol)
+                        .foregroundStyle(AppStyle.quietBoardText)
+                    Spacer(minLength: 4)
+                    if let followingStatus = trip.followingStatus {
+                        Text(followingStatus)
+                            .foregroundStyle(AppStyle.alert)
+                    }
+                }
+                .font(.caption.weight(.medium))
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppStyle.forest, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var statusColor: Color {
+        if trip.isDelayed || trip.isCancelled || trip.isSkipped { return AppStyle.alert }
+        return AppStyle.quietBoardText
     }
 }
 
@@ -307,7 +483,7 @@ private struct JourneySettingsView: View {
             } header: {
                 Text("Usual departure")
             } footer: {
-                Text("Set when you leave your first stop. NextLeg shows the first journey at or after that time, today or the next day. When off, it shows the next journey.")
+                Text("Set when you leave your first stop. NextLeg selects the first matching journey today or tomorrow. Turn it off to show the next journey.")
             }
 
             Section {
@@ -408,8 +584,8 @@ private enum ConnectionState {
     var message: String {
         switch self {
         case .notChecked: "Connection not checked"
-        case .checking: "Connecting to Pi…"
-        case .connected: "Connected to Pi"
+        case .checking: "Checking connection…"
+        case .connected: "Connected to data source"
         case .failed(let reason): "Connection failed: \(reason)"
         }
     }
@@ -425,10 +601,10 @@ private enum ConnectionState {
 
     var color: Color {
         switch self {
-        case .notChecked: Palette.steel
-        case .checking: Palette.amber
-        case .connected: .green
-        case .failed: Palette.signal
+        case .notChecked: .secondary
+        case .checking: AppStyle.warning
+        case .connected: AppStyle.positive
+        case .failed: .red
         }
     }
 
