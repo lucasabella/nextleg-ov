@@ -89,6 +89,8 @@ struct JourneyLeg: Codable {
     let notices: [JourneyNotice]?
     let scheduledArrival: Date?
     let expectedArrival: Date?
+    /// The stops the leg passes, in order, as [latitude, longitude].
+    let path: [[Double]]?
 
     init(
         mode: Mode,
@@ -102,7 +104,8 @@ struct JourneyLeg: Codable {
         delaySeconds: Int? = nil,
         platform: String? = nil,
         sourceUpdatedAt: Date? = nil,
-        notices: [JourneyNotice]? = nil
+        notices: [JourneyNotice]? = nil,
+        path: [[Double]]? = nil
     ) {
         self.mode = mode
         self.origin = origin
@@ -116,6 +119,7 @@ struct JourneyLeg: Codable {
         self.platform = platform
         self.sourceUpdatedAt = sourceUpdatedAt
         self.notices = notices
+        self.path = path
     }
 
     var delayMinutes: Int? { delaySeconds.map { Int((Double($0) / 60).rounded()) } }
@@ -411,6 +415,7 @@ enum JourneyPreferences {
     static let serviceURLKey = "serviceURL"
     static let lastAreaKey = "lastArea"
     static let boardedAtKey = "boardedAt"
+    static let leftStopAtKey = "leftStopAt"
     static let watchedAreasKey = "watchedAreas"
     static let defaultHome = "Blerick"
     static let defaultWork = "Corridor, Veghel"
@@ -451,6 +456,7 @@ enum JourneyPreferences {
         }
         defaults.removeObject(forKey: lastAreaKey)
         defaults.removeObject(forKey: boardedAtKey)
+        defaults.removeObject(forKey: leftStopAtKey)
     }
 
     private static func snapshotKey(for direction: JourneyDirection) -> String {

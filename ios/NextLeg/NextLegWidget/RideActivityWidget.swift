@@ -15,7 +15,7 @@ struct RideActivityWidget: Widget {
                     Label(context.state.mode.name, systemImage: context.state.mode.symbol)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.state.arrival ?? context.state.departure, style: .time)
+                    Text(context.state.journeyArrivalAt ?? context.state.arrival ?? context.state.departure, style: .time)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     RideActivityView(state: context.state, isStale: context.isStale)
@@ -24,7 +24,8 @@ struct RideActivityWidget: Widget {
                 Image(systemName: context.state.mode.symbol)
             } compactTrailing: {
                 Text(context.isStale || context.state.isStale ? "OLD"
-                     : (context.state.arrival ?? context.state.departure).formatted(date: .omitted, time: .shortened))
+                     : (context.state.journeyArrivalAt ?? context.state.arrival ?? context.state.departure)
+                        .formatted(date: .omitted, time: .shortened))
             } minimal: {
                 Image(systemName: context.state.mode.symbol)
             }
@@ -50,10 +51,21 @@ private struct RideActivityView: View {
                         .font(.headline.monospacedDigit())
                 }
             }
-            if let nextMode = state.nextMode, let nextDeparture = state.nextDeparture, let nextDestination = state.nextDestination {
-                Text("Change to \(nextMode.name.lowercased()) for \(nextDestination) at \(nextDeparture.formatted(date: .omitted, time: .shortened))")
-                    .font(.subheadline)
+            if let legs = state.journeyLegs, let first = legs.first, let last = legs.last {
+                Text(legs.map { "\($0.mode.name) to \($0.destination)" }.joined(separator: "  ›  "))
+                    .font(.caption)
                     .lineLimit(1)
+                if let start = state.journeyStartedAt, let end = state.journeyArrivalAt, start < end {
+                    HStack(spacing: 8) {
+                        Text(first.origin)
+                        ProgressView(timerInterval: start...end, countsDown: false)
+                            .progressViewStyle(.linear)
+                            .accessibilityLabel("Journey progress")
+                        Text(last.destination)
+                    }
+                    .font(.caption2)
+                    .lineLimit(1)
+                }
             }
             HStack {
                 Text(status)
@@ -64,14 +76,6 @@ private struct RideActivityView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            if let journeyStartedAt = state.journeyStartedAt {
-                HStack(spacing: 4) {
-                    Text("Journey")
-                    Text(journeyStartedAt, style: .timer).monospacedDigit()
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
         }
     }
 

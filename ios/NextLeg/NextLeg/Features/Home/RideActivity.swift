@@ -7,6 +7,10 @@ enum RideActivity {
         !Activity<RideActivityAttributes>.activities.isEmpty
     }
 
+    static var trackedDirection: JourneyDirection? {
+        Activity<RideActivityAttributes>.activities.first?.attributes.direction
+    }
+
     static func start(snapshot: JourneySnapshot, legIndex: Int) async throws {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw RideActivityError.disabled
@@ -25,8 +29,9 @@ enum RideActivity {
             legIndex: legIndex,
             scheduledDeparture: leg.scheduledDeparture
         )
+        // A journey that already left can be past its first leg.
         let content = ActivityContent(
-            state: state(snapshot: snapshot, legIndex: legIndex),
+            state: state(snapshot: snapshot, legIndex: currentLegIndex(in: snapshot.legs, startingAt: legIndex, at: .now)),
             staleDate: snapshot.fetchedAt.addingTimeInterval(20 * 60)
         )
         _ = try Activity.request(attributes: attributes, content: content, pushType: nil)
@@ -67,6 +72,8 @@ enum RideActivity {
                 nextDeparture: old.nextDeparture,
                 nextDestination: old.nextDestination,
                 journeyStartedAt: old.journeyStartedAt,
+                journeyArrivalAt: old.journeyArrivalAt,
+                journeyLegs: old.journeyLegs,
                 fetchedAt: old.fetchedAt,
                 isStale: true
             )
@@ -96,6 +103,19 @@ enum RideActivity {
             nextDeparture: next?.expectedDeparture ?? next?.scheduledDeparture,
             nextDestination: next?.destination,
             journeyStartedAt: journeyStartedAt ?? snapshot.legs.first?.expectedDeparture ?? snapshot.legs.first?.scheduledDeparture,
+            journeyArrivalAt: snapshot.legs.last?.expectedArrival ?? snapshot.legs.last?.scheduledArrival,
+            journeyLegs: snapshot.legs.map { leg in
+                RideActivityAttributes.LegState(
+                    mode: leg.mode,
+                    origin: leg.origin,
+                    destination: leg.destination,
+                    departure: leg.expectedDeparture ?? leg.scheduledDeparture,
+                    arrival: leg.expectedArrival ?? leg.scheduledArrival,
+                    status: leg.status,
+                    delaySeconds: leg.delaySeconds,
+                    platform: leg.platform
+                )
+            },
             fetchedAt: snapshot.fetchedAt,
             isStale: snapshot.freshness != .fresh || Date.now.timeIntervalSince(snapshot.fetchedAt) >= 20 * 60
         )

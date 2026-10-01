@@ -15,6 +15,7 @@ struct HomeView: View {
     @ObservedObject private var areas = AreaMonitor.shared
 
     @State private var snapshots = JourneyPreferences.cachedSnapshots()
+    @State private var underway: [JourneyDirection: [JourneySnapshot]] = [:]
     @State private var connectionState: ConnectionState = .notChecked
     @State private var isCheckingConnection = false
     @State private var isRefreshingJourney = false
@@ -106,21 +107,50 @@ struct HomeView: View {
                                 isTrackingRide = false
                             }
                         }
-                    } else if let snapshot = snapshots[selectedDirection], previewTrip.freshness == .fresh {
-                        HStack {
-                            ForEach(snapshot.legs.indices, id: \.self) { index in
-                                Button("Track \(snapshot.legs[index].mode.name.lowercased())") {
-                                    Task {
-                                        do {
-                                            try await RideActivity.start(snapshot: snapshot, legIndex: index)
-                                            isTrackingRide = true
-                                        } catch {
-                                            journeyMessage = error.localizedDescription
+                    } else if let snapshot = snapshots[selectedDirection],
+                              previewTrip.freshness == .fresh,
+                              let firstLeg = snapshot.legs.first {
+                        Button {
+                            Task {
+                                do {
+                                    try await RideActivity.start(snapshot: snapshot, legIndex: 0)
+                                    isTrackingRide = true
+                                } catch {
+                                    journeyMessage = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label("Track journey", systemImage: "livephoto")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(firstLeg.status == .cancelled || firstLeg.status == .skipped)
+                    }
+
+                    // For when location did not pick up the ride you are on.
+                    if !isTrackingRide, let journeys = underway[selectedDirection], !journeys.isEmpty {
+                        Menu {
+                            ForEach(journeys.indices, id: \.self) { index in
+                                if let first = journeys[index].legs.first, let arrival = journeys[index].legs.last?.arrivalTime {
+                                    Button {
+                                        Task {
+                                            do {
+                                                try await RideActivity.start(snapshot: journeys[index], legIndex: 0)
+                                                isTrackingRide = true
+                                            } catch {
+                                                journeyMessage = error.localizedDescription
+                                            }
                                         }
+                                    } label: {
+                                        Label("\(first.departureTime.formatted(date: .omitted, time: .shortened)) \(first.mode.name.lowercased()) to \(first.destination)",
+                                              systemImage: first.mode.symbol)
+                                        Text("Arrives \(arrival.formatted(date: .omitted, time: .shortened))")
                                     }
                                 }
-                                .disabled(snapshot.legs[index].status == .cancelled || snapshot.legs[index].status == .skipped)
                             }
+                        } label: {
+                            Label("Track an earlier journey", systemImage: "clock.arrow.circlepath")
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                     }
@@ -189,6 +219,7 @@ struct HomeView: View {
             .onChange(of: serviceURL) { _, _ in
                 connectionState = .notChecked
                 journeyMessage = nil
+                underway = [:]
                 for direction in JourneyDirection.allCases {
                     guard let snapshot = snapshots[direction], snapshot.freshness != .sample else { continue }
                     let staleSnapshot = snapshot.withFreshness(.stale)
@@ -282,25 +313,35 @@ struct HomeView: View {
         }
 
         do {
-            let snapshot = try await JourneyService().fetchJourney(
+            let service = JourneyService()
+            // An older Pi service has no list of journeys underway, so that list is optional.
+            async let journeysUnderway = try? service.fetchUnderway(at: requestedURL, direction: requestedDirection)
+            let snapshot = try await service.fetchJourney(
                 at: requestedURL,
                 direction: requestedDirection,
                 usualDeparture: requestedDeparture,
                 boardedAt: requestedBoardedAt
             )
+            let journeys = await journeysUnderway ?? []
             guard serviceURL == requestedURL,
                   selectedDirection == requestedDirection,
                   [homeStop, workStop] == requestedStops,
                   JourneyPreferences.usualDeparture(for: requestedDirection) == requestedDeparture,
                   JourneyPreferences.boardedAt(for: requestedDirection) == requestedBoardedAt else { return }
             snapshots[requestedDirection] = snapshot
+            underway[requestedDirection] = journeys
             JourneyPreferences.cache(snapshot)
             await RideActivity.update(with: snapshot)
+            // A ride that already left is no longer the next journey.
+            for journey in journeys {
+                await RideActivity.update(with: journey)
+            }
             connectionState = .connected
             journeyMessage = nil
             reloadWidget()
         } catch {
             guard serviceURL == requestedURL, selectedDirection == requestedDirection else { return }
+            underway[requestedDirection] = nil
             markSelectedSnapshotStale()
             await RideActivity.markStale(direction: requestedDirection)
             connectionState = .failed(error.localizedDescription)
@@ -329,6 +370,7 @@ struct HomeView: View {
     private func stopsChanged() {
         JourneyPreferences.forgetRoute()
         snapshots = [:]
+        underway = [:]
         AreaMonitor.shared.updateAreas()
         reloadWidget()
         Task {
@@ -566,7 +608,7 @@ private struct JourneySettingsView: View {
 
     private var areaStatus: String {
         guard let area = Area(rawValue: lastArea) else { return "Not known yet" }
-        guard boardedAt > 0 else { return "Near \(area.rawValue)" }
+        guard boardedAt > 0 else { return "At \(area.rawValue)" }
         return "Left \(area.rawValue) at \(Date(timeIntervalSince1970: boardedAt).formatted(date: .omitted, time: .shortened))"
     }
 }

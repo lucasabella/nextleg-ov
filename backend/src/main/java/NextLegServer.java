@@ -53,6 +53,9 @@ public final class NextLegServer {
     private static final Duration BOARDED_BEFORE = Duration.ofMinutes(30);
     private static final Duration BOARDED_AFTER = Duration.ofMinutes(5);
     private static final Duration BOARDED_NOTICE_DELAY = Duration.ofMinutes(2);
+    // Journeys that left this long ago can still be picked to track by hand.
+    private static final Duration UNDERWAY_WINDOW = Duration.ofHours(3);
+    private static final int MAX_UNDERWAY = 10;
     // Delays can make a ride scheduled before the transfer window catchable, so candidates are checked this far back.
     private static final Duration DELAY_SLACK = Duration.ofHours(3);
     private static final URI DEFAULT_FEED_URI = URI.create("https://gtfs.openov.nl/gtfs-rt/gtfs-openov-nl.zip");
@@ -109,7 +112,8 @@ public final class NextLegServer {
     private static void handle(HttpExchange exchange, ScheduleRepository schedules, RealtimeFeeds realtime, NsNotices ns, Set<String> watched,
                                int transferBufferMinutes, int maxTransferWaitMinutes) throws IOException {
         String path = exchange.getRequestURI().getPath();
-        if (!path.equals("/health") && !path.equals("/api/v1/journey") && !path.equals("/api/v1/stops")) {
+        if (!path.equals("/health") && !path.equals("/api/v1/journey") && !path.equals("/api/v1/underway")
+                && !path.equals("/api/v1/stops")) {
             send(exchange, 404, "{\"error\":\"Not found.\"}");
             return;
         }
@@ -129,9 +133,11 @@ public final class NextLegServer {
         String body;
         try {
             String query = exchange.getRequestURI().getRawQuery();
-            body = path.equals("/api/v1/stops")
-                    ? stopsJson(state.data(), queryParameter(query, "query"))
-                    : journeyResponse(query, state, realtime, ns, watched, transferBufferMinutes, maxTransferWaitMinutes);
+            body = switch (path) {
+                case "/api/v1/stops" -> stopsJson(state.data(), queryParameter(query, "query"));
+                case "/api/v1/underway" -> journeyResponse(query, true, state, realtime, ns, watched, transferBufferMinutes, maxTransferWaitMinutes);
+                default -> journeyResponse(query, false, state, realtime, ns, watched, transferBufferMinutes, maxTransferWaitMinutes);
+            };
         } catch (IllegalArgumentException exception) {
             send(exchange, 400, jsonError(exception.getMessage()));
             return;
@@ -139,8 +145,8 @@ public final class NextLegServer {
         send(exchange, 200, body);
     }
 
-    private static String journeyResponse(String query, FeedState state, RealtimeFeeds realtime, NsNotices ns, Set<String> watched,
-                                          int bufferMinutes, int maxWaitMinutes) {
+    private static String journeyResponse(String query, boolean underway, FeedState state, RealtimeFeeds realtime, NsNotices ns,
+                                          Set<String> watched, int bufferMinutes, int maxWaitMinutes) {
         String direction = queryParameter(query, "direction");
         if (direction == null || direction.isBlank()) {
             throw new IllegalArgumentException("Missing required query parameter: direction.");
@@ -166,6 +172,18 @@ public final class NextLegServer {
         Map<String, TripUpdate> updates = realtime.current(timetable.tripIdsAt(watched), now);
 
         Search search = new Search(timetable, updates, origin, destination, bufferMinutes, maxWaitMinutes);
+        if (underway) {
+            List<Journey> journeys = search.underway(now);
+            boolean byTrain = journeys.stream().flatMap(journey -> journey.rides().stream())
+                    .anyMatch(ride -> timetable.tripModes[ride.trip()] == 0);
+            List<Notice> notices = byTrain ? ns.current(now) : List.of();
+            StringBuilder json = new StringBuilder("{\"journeys\":[");
+            for (int index = 0; index < journeys.size(); index++) {
+                if (index > 0) json.append(',');
+                json.append(journeyJson(direction, journeys.get(index), state, now, notices));
+            }
+            return json.append("]}").toString();
+        }
         Journey journey = boardedAt == null ? null : search.boarded(boardedAt);
         if (journey == null) journey = usualDeparture == null ? search.next(now) : search.usual(usualDeparture, now);
         boolean byTrain = journey != null && journey.rides().stream().anyMatch(ride -> timetable.tripModes[ride.trip()] == 0);
@@ -242,6 +260,27 @@ public final class NextLegServer {
                 if (journey != null) return journey;
             }
             return null;
+        }
+
+        /**
+         * Journeys whose first ride left in the last three hours and that have not arrived yet, latest departure
+         * first: per ride, the fastest way on from it. A journey is left out when one that leaves later arrives sooner.
+         */
+        private List<Journey> underway(Instant now) {
+            List<Journey> journeys = new ArrayList<>();
+            for (Boarding boarding : boardings(now.minus(UNDERWAY_WINDOW), now)) {
+                Journey journey = best(List.of(boarding));
+                if (journey != null && journey.arrival().isAfter(now)) journeys.add(journey);
+            }
+            List<Journey> result = new ArrayList<>();
+            Instant soonest = null;
+            for (int index = journeys.size() - 1; index >= 0 && result.size() < MAX_UNDERWAY; index--) {
+                Journey journey = journeys.get(index);
+                if (soonest != null && soonest.isBefore(journey.arrival())) continue;
+                result.add(journey);
+                soonest = journey.arrival();
+            }
+            return result;
         }
 
         /** Every dated departure from the origin between two times, earliest first. */
@@ -375,6 +414,15 @@ public final class NextLegServer {
         if (live != null && live.updatedAt() != null) {
             json.append(",\"sourceUpdatedAt\":\"").append(ISO_INSTANT.format(live.updatedAt())).append('"');
         }
+        // The stops the ride passes, so the phone can check that it follows this ride without sending its location.
+        json.append(",\"path\":[");
+        for (int event = ride.board(); event <= ride.alight(); event++) {
+            int stop = timetable.eventStops[event];
+            if (event > ride.board()) json.append(',');
+            json.append('[').append(Math.round(timetable.stopLatitudes[stop] * 1e5) / 1e5)
+                    .append(',').append(Math.round(timetable.stopLongitudes[stop] * 1e5) / 1e5).append(']');
+        }
+        json.append(']');
         List<Notice> legNotices = noticesFor(timetable, ride, notices);
         if (!legNotices.isEmpty()) {
             json.append(",\"notices\":[");

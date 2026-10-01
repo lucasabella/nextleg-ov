@@ -35,6 +35,23 @@ struct JourneyService {
         return snapshot
     }
 
+    /// Journeys that already left the first stop and have not arrived yet, latest departure first.
+    func fetchUnderway(at serviceURL: String, direction: JourneyDirection) async throws -> [JourneySnapshot] {
+        let stops = JourneyPreferences.stops(for: direction)
+        let data = try await get(serviceURL: serviceURL, path: "/api/v1/underway", query: [
+            URLQueryItem(name: "direction", value: direction.rawValue),
+            URLQueryItem(name: "from", value: stops.from.id),
+            URLQueryItem(name: "to", value: stops.to.id),
+        ])
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let response = try? decoder.decode(UnderwayResponse.self, from: data),
+              response.journeys.allSatisfy({ $0.direction == direction }) else {
+            throw JourneyServiceError.invalidJourneyResponse
+        }
+        return response.journeys
+    }
+
     /// Stations and stops whose name matches what was typed, best match first.
     func searchStops(at serviceURL: String, query: String) async throws -> [Stop] {
         let data: Data
@@ -126,6 +143,10 @@ private struct HealthResponse: Decodable {
 
 private struct StopsResponse: Decodable {
     let stops: [Stop]
+}
+
+private struct UnderwayResponse: Decodable {
+    let journeys: [JourneySnapshot]
 }
 
 private enum JourneyServiceError: LocalizedError {
