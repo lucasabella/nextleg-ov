@@ -11,6 +11,10 @@ enum RideActivity {
         Activity<RideActivityAttributes>.activities.first?.attributes.direction
     }
 
+    static var trackedDeparture: Date? {
+        Activity<RideActivityAttributes>.activities.first?.attributes.scheduledDeparture
+    }
+
     static func start(snapshot: JourneySnapshot, legIndex: Int) async throws {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw RideActivityError.disabled

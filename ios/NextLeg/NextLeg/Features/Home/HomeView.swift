@@ -15,13 +15,16 @@ struct HomeView: View {
     @ObservedObject private var areas = AreaMonitor.shared
 
     @State private var snapshots = JourneyPreferences.cachedSnapshots()
-    @State private var underway: [JourneyDirection: [JourneySnapshot]] = [:]
+    /// Per direction, the journeys still underway, or why they could not be loaded.
+    @State private var underway: [JourneyDirection: Result<[JourneySnapshot], Error>] = [:]
     @State private var connectionState: ConnectionState = .notChecked
     @State private var isCheckingConnection = false
     @State private var isRefreshingJourney = false
-    @State private var isTrackingRide = RideActivity.isActive
+    @State private var trackedDeparture = RideActivity.trackedDeparture
     @State private var journeyMessage: String?
     @Environment(\.scenePhase) private var scenePhase
+
+    private var isTrackingRide: Bool { trackedDeparture != nil }
 
     private var selectedDirection: JourneyDirection {
         directionMode.direction(at: .now, lastArea: Area(rawValue: lastArea))
@@ -104,21 +107,14 @@ struct HomeView: View {
                         Button("Stop Live Activity") {
                             Task {
                                 await RideActivity.end()
-                                isTrackingRide = false
+                                trackedDeparture = nil
                             }
                         }
                     } else if let snapshot = snapshots[selectedDirection],
                               previewTrip.freshness == .fresh,
                               let firstLeg = snapshot.legs.first {
                         Button {
-                            Task {
-                                do {
-                                    try await RideActivity.start(snapshot: snapshot, legIndex: 0)
-                                    isTrackingRide = true
-                                } catch {
-                                    journeyMessage = error.localizedDescription
-                                }
-                            }
+                            track(snapshot)
                         } label: {
                             Label("Track journey", systemImage: "livephoto")
                                 .frame(maxWidth: .infinity)
@@ -127,38 +123,15 @@ struct HomeView: View {
                         .disabled(firstLeg.status == .cancelled || firstLeg.status == .skipped)
                     }
 
-                    // For when location did not pick up the ride you are on.
-                    if !isTrackingRide, let journeys = underway[selectedDirection], !journeys.isEmpty {
-                        Menu {
-                            ForEach(journeys.indices, id: \.self) { index in
-                                if let first = journeys[index].legs.first, let arrival = journeys[index].legs.last?.arrivalTime {
-                                    Button {
-                                        Task {
-                                            do {
-                                                try await RideActivity.start(snapshot: journeys[index], legIndex: 0)
-                                                isTrackingRide = true
-                                            } catch {
-                                                journeyMessage = error.localizedDescription
-                                            }
-                                        }
-                                    } label: {
-                                        Label("\(first.departureTime.formatted(date: .omitted, time: .shortened)) \(first.mode.name.lowercased()) to \(first.destination)",
-                                              systemImage: first.mode.symbol)
-                                        Text("Arrives \(arrival.formatted(date: .omitted, time: .shortened))")
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label("Track an earlier journey", systemImage: "clock.arrow.circlepath")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
                     if let journeyMessage {
                         Text(journeyMessage)
                             .font(.footnote)
                             .foregroundStyle(connectionState.isError ? AppStyle.alert : AppStyle.warning)
+                    }
+
+                    // For when location did not pick up the ride you are on.
+                    if let result = underway[selectedDirection] {
+                        EarlierJourneysList(result: result, trackedDeparture: trackedDeparture, onTrack: track)
                     }
                 }
                 .frame(maxWidth: 500)
@@ -171,7 +144,7 @@ struct HomeView: View {
             .scrollIndicators(.hidden)
             // Also runs when coming back from Settings, so a changed usual departure shows right away.
             .onAppear {
-                isTrackingRide = RideActivity.isActive
+                trackedDeparture = RideActivity.trackedDeparture
                 Task { await refreshJourney() }
             }
             .toolbar {
@@ -207,7 +180,7 @@ struct HomeView: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
-                    isTrackingRide = RideActivity.isActive
+                    trackedDeparture = RideActivity.trackedDeparture
                     Task { await refreshJourney() }
                 }
             }
@@ -315,25 +288,25 @@ struct HomeView: View {
         do {
             let service = JourneyService()
             // An older Pi service has no list of journeys underway, so that list is optional.
-            async let journeysUnderway = try? service.fetchUnderway(at: requestedURL, direction: requestedDirection)
+            async let journeysUnderway = Self.underway(at: requestedURL, direction: requestedDirection)
             let snapshot = try await service.fetchJourney(
                 at: requestedURL,
                 direction: requestedDirection,
                 usualDeparture: requestedDeparture,
                 boardedAt: requestedBoardedAt
             )
-            let journeys = await journeysUnderway ?? []
+            let underwayResult = await journeysUnderway
             guard serviceURL == requestedURL,
                   selectedDirection == requestedDirection,
                   [homeStop, workStop] == requestedStops,
                   JourneyPreferences.usualDeparture(for: requestedDirection) == requestedDeparture,
                   JourneyPreferences.boardedAt(for: requestedDirection) == requestedBoardedAt else { return }
             snapshots[requestedDirection] = snapshot
-            underway[requestedDirection] = journeys
+            underway[requestedDirection] = underwayResult
             JourneyPreferences.cache(snapshot)
             await RideActivity.update(with: snapshot)
             // A ride that already left is no longer the next journey.
-            for journey in journeys {
+            for journey in (try? underwayResult.get()) ?? [] {
                 await RideActivity.update(with: journey)
             }
             connectionState = .connected
@@ -347,6 +320,26 @@ struct HomeView: View {
             connectionState = .failed(error.localizedDescription)
             journeyMessage = cachedMessage
             reloadWidget()
+        }
+    }
+
+    private static func underway(at serviceURL: String, direction: JourneyDirection) async -> Result<[JourneySnapshot], Error> {
+        do {
+            return .success(try await JourneyService().fetchUnderway(at: serviceURL, direction: direction))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Starts a Live Activity for the journey. It replaces a ride that is already tracked.
+    private func track(_ snapshot: JourneySnapshot) {
+        Task {
+            do {
+                try await RideActivity.start(snapshot: snapshot, legIndex: 0)
+                trackedDeparture = snapshot.legs.first?.scheduledDeparture
+            } catch {
+                journeyMessage = error.localizedDescription
+            }
         }
     }
 
@@ -375,7 +368,7 @@ struct HomeView: View {
         reloadWidget()
         Task {
             await RideActivity.end()
-            isTrackingRide = false
+            trackedDeparture = nil
             await refreshJourney()
         }
     }
@@ -509,6 +502,112 @@ private struct JourneyBoardCard: View {
     private var statusColor: Color {
         if trip.isDelayed || trip.isCancelled || trip.isSkipped { return AppStyle.alert }
         return AppStyle.quietBoardText
+    }
+}
+
+/// Journeys that already left and have not arrived yet. Tapping one tracks it in a Live Activity.
+private struct EarlierJourneysList: View {
+    let result: Result<[JourneySnapshot], Error>
+    let trackedDeparture: Date?
+    let onTrack: (JourneySnapshot) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Earlier journeys")
+                    .font(.headline)
+                Text("Left in the last three hours. Tap the one you are on to track it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            switch result {
+            case .success(let journeys) where journeys.isEmpty:
+                Text("No journey that left in the last three hours is still on the way.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            case .success(let journeys):
+                VStack(spacing: 0) {
+                    ForEach(journeys.indices, id: \.self) { index in
+                        if index > 0 {
+                            Divider().padding(.leading, 52)
+                        }
+                        row(journeys[index])
+                    }
+                }
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            case .failure(let error):
+                Label(error.localizedDescription, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(AppStyle.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ journey: JourneySnapshot) -> some View {
+        if let first = journey.legs.first {
+            let isTracked = first.scheduledDeparture == trackedDeparture
+            Button {
+                if !isTracked { onTrack(journey) }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: first.mode.symbol)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(AppStyle.accent)
+                        .frame(width: 28)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text(time(first.scheduledDeparture))
+                                .monospacedDigit()
+                            if let delay = first.delayMinutes, delay > 0 {
+                                Text("+\(delay)")
+                                    .foregroundStyle(AppStyle.warning)
+                            }
+                            Text("to \(first.destination)")
+                                .lineLimit(1)
+                        }
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                        Text(detail(journey))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if isTracked {
+                        Label("Tracking", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppStyle.positive)
+                    } else {
+                        Text("Track")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppStyle.accent)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isTracked ? .isSelected : [])
+        }
+    }
+
+    private func detail(_ journey: JourneySnapshot) -> String {
+        let arrival = journey.legs.last?.arrivalTime.map { time($0) } ?? "unknown"
+        guard journey.legs.count > 1 else { return "Arrives \(arrival)" }
+        let onward = journey.legs.dropFirst().map { $0.mode.name.lowercased() }.joined(separator: ", ")
+        return "Then \(onward), arrives \(arrival)"
+    }
+
+    private func time(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
     }
 }
 

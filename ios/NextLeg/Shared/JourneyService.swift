@@ -38,11 +38,16 @@ struct JourneyService {
     /// Journeys that already left the first stop and have not arrived yet, latest departure first.
     func fetchUnderway(at serviceURL: String, direction: JourneyDirection) async throws -> [JourneySnapshot] {
         let stops = JourneyPreferences.stops(for: direction)
-        let data = try await get(serviceURL: serviceURL, path: "/api/v1/underway", query: [
-            URLQueryItem(name: "direction", value: direction.rawValue),
-            URLQueryItem(name: "from", value: stops.from.id),
-            URLQueryItem(name: "to", value: stops.to.id),
-        ])
+        let data: Data
+        do {
+            data = try await get(serviceURL: serviceURL, path: "/api/v1/underway", query: [
+                URLQueryItem(name: "direction", value: direction.rawValue),
+                URLQueryItem(name: "from", value: stops.from.id),
+                URLQueryItem(name: "to", value: stops.to.id),
+            ])
+        } catch JourneyServiceError.httpStatus(let status) where status == 404 {
+            throw JourneyServiceError.underwayUnavailable
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let response = try? decoder.decode(UnderwayResponse.self, from: data),
@@ -157,6 +162,7 @@ private enum JourneyServiceError: LocalizedError {
     case invalidJourneyResponse
     case wrongJourneyDirection
     case stopSearchUnavailable
+    case underwayUnavailable
     case invalidStopsResponse
     case httpStatus(Int)
 
@@ -176,6 +182,8 @@ private enum JourneyServiceError: LocalizedError {
             "The service returned a journey for the wrong direction."
         case .stopSearchUnavailable:
             "This service cannot search stops yet. Update the NextLeg service on the Pi."
+        case .underwayUnavailable:
+            "This service cannot list earlier journeys yet. Update the NextLeg service on the Pi."
         case .invalidStopsResponse:
             "The service returned stops in an invalid format."
         case .httpStatus(let status):
