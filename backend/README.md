@@ -22,10 +22,10 @@ From this repository checkout:
 cd backend
 mkdir -p build
 javac --release 21 --add-modules jdk.httpserver -d build src/main/java/NextLegServer.java
-java -Xmx384m -XX:+UseSerialGC --add-modules jdk.httpserver -cp build NextLegServer
+java -Xmx512m -XX:+UseSerialGC --add-modules jdk.httpserver -cp build NextLegServer
 ```
 
-The first run downloads the OpenOV schedule archive, currently about 230 MB compressed. At startup and after each update, the service reads the timetable from yesterday up to the day after tomorrow into memory, about 4 million stop times. That takes a few seconds on a laptop and longer on a Pi. After midnight it reads the saved archive again for the new days. The service checks for schedule updates every six hours and keeps the archive in `~/.nextleg` by default. OpenOV's schedule feed is CC0. The downloader uses a descriptive User-Agent, gzip, and conditional requests as requested by the [feed usage policy](https://gtfs.openov.nl/LICENSE.TXT). Check the [feed listing](https://gtfs.openov.nl/gtfs-rt/) for the current archive size.
+The first run downloads the OpenOV schedule archive, currently about 250 MB compressed. At startup and after each update, the service reads the timetable from yesterday up to the day after tomorrow into memory, about 5 million stop times. That takes a few seconds on a laptop and longer on a Pi. After midnight it reads the saved archive again for the new days. The service checks for schedule updates every six hours and keeps the archive in `~/.nextleg` by default. OpenOV's schedule feed is CC0. The downloader uses a descriptive User-Agent, gzip, and conditional requests as requested by the [feed usage policy](https://gtfs.openov.nl/LICENSE.TXT). Check the [feed listing](https://gtfs.openov.nl/gtfs-rt/) for the current archive size.
 
 For live data, the service fetches `trainUpdates.pb` and `tripUpdates.pb` (about 2 MB gzipped together) when a journey is requested, at most once a minute, with `If-None-Match`. It keeps only the trips that stop at places recent requests used, and reads the feeds again sooner when a request adds new places. When a feed fails, it uses the last good data for up to ten minutes, then falls back to scheduled times. OpenOV answers HTTP 429 when one address asks too often, so do not poll the feeds from other tools on the same network.
 
@@ -49,7 +49,7 @@ Wants=network-online.target
 [Service]
 User=pi
 WorkingDirectory=/home/pi/nextleg-ov/backend
-ExecStart=/usr/bin/java -Xmx384m -XX:+UseSerialGC -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30 --add-modules jdk.httpserver src/main/java/NextLegServer.java
+ExecStart=/usr/bin/java -Xmx512m -XX:+UseSerialGC -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30 --add-modules jdk.httpserver src/main/java/NextLegServer.java
 Restart=on-failure
 RestartSec=10
 # Java exits with 143 on SIGTERM, which is a normal stop.
@@ -62,7 +62,7 @@ sudo systemctl enable --now nextleg
 journalctl -u nextleg -f
 ```
 
-The timetable uses about 130 MB of heap. Reading a new one while the old one still serves requests peaks at about 270 MB, so 384 MB of heap is enough. The serial collector and heap ratios give unused memory back, which keeps the process around 350 MB.
+Reading a new timetable while the old one still serves requests needs more than 384 MB of heap since the feed grew past 5 million stop times, so use 512 MB. With less, the update fails without a log line and the service reports `stale` until a restart. Right after an update the process uses about 650 MB. The serial collector and heap ratios give unused memory back over time.
 
 ## Reach it away from home
 
